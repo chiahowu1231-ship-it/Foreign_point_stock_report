@@ -4,6 +4,7 @@ import os
 import json
 import glob
 import smtplib
+import textwrap
 from email.message import EmailMessage
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -26,6 +27,8 @@ def load_summary():
         "brokers_total": 0,
         "brokers_ok": 0,
         "brokers_fail": 0,
+        "top_preview": [],
+        "ai_analysis": "",
     }
 
 
@@ -41,12 +44,26 @@ def _fmt_int(n):
         return str(n)
 
 
+def wrap_text(s: str, width: int = 72) -> str:
+    """
+    iPhone/Apple Mail 友善：將長段落自動換行，不用空白對齊。
+    保留段落（以空行或換行區隔）。
+    """
+    s = (s or "").strip()
+    if not s:
+        return ""
+    # 以換行拆段，清理空段落
+    paras = [p.strip() for p in s.split("\n") if p.strip()]
+    return "\n\n".join(textwrap.fill(p, width=width) for p in paras)
+
+
 def build_body(summary: dict):
     """
     純文字排版（iPhone/Apple Mail 友善）：
-    - 不用表格、不用對齊空白
-    - 每家外資間空一行
-    - 每檔用 1) 2) 3) 條列
+    - 不用表格、不用等寬對齊
+    - 每家外資之間空一行
+    - Top3 用 1) 2) 3) 條列
+    - AI 分析以段落呈現，自動換行
     """
     ok = summary.get("success", False)
     status_text = "成功" if ok else "失敗/部分失敗"
@@ -63,6 +80,7 @@ def build_body(summary: dict):
         f"分點狀態：OK {summary.get('brokers_ok', 0)} / FAIL {summary.get('brokers_fail', 0)}（總計 {summary.get('brokers_total', 0)}）"
     )
 
+    # Workflow 連結
     server_url = os.getenv("GITHUB_SERVER_URL")
     repo = os.getenv("GITHUB_REPOSITORY")
     run_id = os.getenv("GITHUB_RUN_ID")
@@ -70,12 +88,12 @@ def build_body(summary: dict):
         lines.append("")
         lines.append(f"本次 Workflow 連結：{server_url}/{repo}/actions/runs/{run_id}")
 
-    # ===== ✅ 每家外資買超 Top 3（iPhone 友善純文字）=====
+    # ===== ✅ 每家外資買超 Top 3 =====
     top_preview = summary.get("top_preview") or []
-    top_n_in_mail = 3  # 你指定：信件正文只顯示 Top 3
+    top3 = 3
 
     lines.append("")
-    lines.append(f"【每家外資買超 Top {top_n_in_mail}】（依外資總淨超排序）")
+    lines.append(f"【每家外資買超 Top {top3}】（依外資總淨超排序）")
 
     if not top_preview:
         lines.append("本次無可用 Top 資料（可能當天無資料或尚未產生 top_preview）。")
@@ -89,8 +107,8 @@ def build_body(summary: dict):
             lines.append(f"■ {broker}")
             lines.append(f"  總淨超：{_fmt_int(total_net)} 張")
 
-            # 只取 Top 3
-            for idx, r in enumerate(rows[:top_n_in_mail], start=1):
+            # 每檔一行，避免 iPhone 換行後黏在一起
+            for idx, r in enumerate(rows[:top3], start=1):
                 sid = r.get("sid", "")
                 name = r.get("name", "")
                 net = r.get("net", 0)
@@ -98,10 +116,30 @@ def build_body(summary: dict):
                 price = r.get("price", "")
                 bias = r.get("bias", "")
 
-                # 單行條列：避免 iPhone 寬度換行後看起來擠在一起
                 lines.append(
                     f"  {idx}) {sid} {name}｜淨超 {_fmt_int(net)} 張｜均價 {avg}｜現價 {price}｜乖離 {bias}"
                 )
+
+    # ===== ✅ AI 分析（Gemini）=====
+    ai_text = summary.get("ai_analysis", "")
+    ai_provider = summary.get("ai_provider", "")
+    ai_model = summary.get("ai_model", "")
+
+    lines.append("")
+    lines.append("【AI 分析】")
+
+    if ai_text:
+        head = "來源："
+        if ai_provider:
+            head += ai_provider
+        if ai_model:
+            head += f" {ai_model}"
+        if head != "來源：":
+            lines.append(head.strip())
+        lines.append("")
+        lines.append(wrap_text(ai_text, width=72))
+    else:
+        lines.append("本次尚未取得 AI 分析（可能未設定 GEMINI_API_KEY 或分析步驟未執行）。")
 
     # ===== 錯誤摘要 =====
     if summary.get("errors"):
@@ -115,14 +153,32 @@ def build_body(summary: dict):
     return "\n".join(lines)
 
 
+def _safe_int_env(name: str, default: int) -> int:
+    v = (os.environ.get(name, "") or "").strip()
+    if not v:
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
 def main():
-    smtp_host = os.environ["SMTP_HOST"]
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ["SMTP_USER"]
-    smtp_pass = os.environ["SMTP_PASS"]
-    mail_from = os.environ.get("MAIL_FROM", smtp_user)
-    mail_to = os.environ["MAIL_TO"]
-    mail_bcc = os.environ.get("MAIL_BCC", "")
+    # SMTP 基本參數（host/port 建議寫死在 workflow；此處也做防呆）
+    smtp_host = (os.environ.get("SMTP_HOST", "smtp.gmail.com") or "").strip() or "smtp.gmail.com"
+    smtp_port = _safe_int_env("SMTP_PORT", 587)
+
+    smtp_user = (os.environ.get("SMTP_USER") or "").strip()
+    smtp_pass = (os.environ.get("SMTP_PASS") or "").strip()
+
+    mail_from = (os.environ.get("MAIL_FROM") or smtp_user).strip()
+    mail_to = (os.environ.get("MAIL_TO") or "").strip()
+    mail_bcc = (os.environ.get("MAIL_BCC") or "").strip()
+
+    if not smtp_user or not smtp_pass:
+        raise RuntimeError("SMTP_USER/SMTP_PASS 未設定（請在 GitHub Secrets 設定）")
+    if not mail_to:
+        raise RuntimeError("MAIL_TO 未設定（請在 GitHub Secrets 設定）")
 
     summary = load_summary()
 
@@ -136,12 +192,14 @@ def main():
     msg = EmailMessage()
     msg["From"] = mail_from
     msg["To"] = mail_to
-    if mail_bcc.strip():
+    if mail_bcc:
         msg["Bcc"] = mail_bcc
     msg["Subject"] = subject
 
+    # 純文字正文
     msg.set_content(build_body(summary))
 
+    # 附件（若存在就附）
     attachments = [
         (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         (pdf, "application/pdf"),
@@ -165,3 +223,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+``
