@@ -1,14 +1,18 @@
-name: Point Stock Daily Report (TW 16:00)
+
+name: 外資分點狙擊分析 (TW 14:30)
 
 on:
   schedule:
-    # 台灣 16:00 = UTC 08:00；週一～週五
-    - cron: "0 8 * * 1-5"
+    # 台灣 14:30 = UTC 06:30；週一～週五
+    - cron: "30 6 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
   report:
     runs-on: ubuntu-latest
+    env:
+      # 先提前用 Node24 跑所有 JavaScript actions，提早發現相容性問題
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -28,30 +32,60 @@ jobs:
         env:
           TZ: Asia/Taipei
           DAYS: "5"
+          DEBUG_HTML: "1"
         run: |
           python src/run_report.py
+
+      # 列出檔案位置：立即知道產物是在 output/ 還是 src/output/ 或根本沒產出
+      - name: Debug list output files
+        if: always()
+        run: |
+          echo "PWD=$(pwd)"
+          echo "== list root =="
+          ls -la
+          echo "== list output =="
+          ls -la output || true
+          echo "== list src/output =="
+          ls -la src/output || true
+          echo "== find reports =="
+          find . -maxdepth 4 -type f \( -name "*.xlsx" -o -name "*.pdf" -o -name "summary.json" -o -name "*.html" \) -print || true
 
       - name: Upload artifacts (auto expire)
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: ike-report
+          name: foreign-report
           path: |
             output/*.xlsx
             output/*.pdf
             output/summary.json
+            output/debug/*.html
+            src/output/*.xlsx
+            src/output/*.pdf
+            src/output/summary.json
+            src/output/debug/*.html
           retention-days: 7
+          if-no-files-found: warn
+
+      - name: Build mail subject (Asia/Taipei yyyy-mm-dd)
+        if: always()
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REPORT_DATE="$(TZ=Asia/Taipei date +'%Y-%m-%d')"
+          echo "MAIL_SUBJECT=【外資分點狙擊分析】${REPORT_DATE}（TW 14:30）${REPO_NAME}" >> $GITHUB_ENV
 
       - name: Send email (always)
         if: always()
         env:
           DAYS: "5"
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          # host/port 非敏感資訊寫死，避免 secrets 空值造成連線/轉型錯誤
+          SMTP_HOST: "smtp.gmail.com"
+          SMTP_PORT: "587"
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_FROM:  ${{ secrets.MAIL_FROM }}
           MAIL_TO:    ${{ secrets.MAIL_TO }}
           MAIL_BCC:   ${{ secrets.MAIL_BCC }}
+          MAIL_SUBJECT: ${{ env.MAIL_SUBJECT }}
         run: |
           python src/mailer.py
