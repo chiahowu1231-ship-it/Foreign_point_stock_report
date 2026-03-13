@@ -1,0 +1,57 @@
+name: Point Stock Daily Report (TW 16:00)
+
+on:
+  schedule:
+    # 台灣 16:00 = UTC 08:00；週一～週五
+    - cron: "0 8 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate Excel/PDF (DAYS=5)
+        env:
+          TZ: Asia/Taipei
+          DAYS: "5"
+        run: |
+          python src/run_report.py
+
+      - name: Upload artifacts (auto expire)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ike-report
+          path: |
+            output/*.xlsx
+            output/*.pdf
+            output/summary.json
+          retention-days: 7
+
+      - name: Send email (always)
+        if: always()
+        env:
+          DAYS: "5"
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM:  ${{ secrets.MAIL_FROM }}
+          MAIL_TO:    ${{ secrets.MAIL_TO }}
+          MAIL_BCC:   ${{ secrets.MAIL_BCC }}
+        run: |
+          python src/mailer.py
