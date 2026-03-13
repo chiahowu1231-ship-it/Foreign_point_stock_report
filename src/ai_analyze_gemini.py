@@ -54,4 +54,3 @@ def build_prompt(summary: dict) -> str:
     lines.append("- 最後加一段『一句話摘要』，≤ 25 字，適合當手機通知預覽")
 
     return "\n".join(lines)
-``
