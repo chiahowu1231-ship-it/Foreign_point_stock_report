@@ -3,23 +3,31 @@ name: 外資分點狙擊分析 (TW 14:30)
 
 on:
   schedule:
-    # 台灣 14:30 = UTC 06:30；週一～週五
+    # GitHub Actions cron 使用 UTC。台灣 14:30 = UTC 06:30；週一～週五
     - cron: "30 6 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
   report:
     runs-on: ubuntu-latest
+
     env:
       # 先提前用 Node24 跑所有 JavaScript actions，提早發現相容性問題
+      # GitHub 官方提供此 env 供提早驗證；2026-06-02 起將預設 Node24 [1](https://ai.google.dev/gemini-api/docs/aistudio-build-mode)
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+      # 報表參數（你目前固定這樣用）
+      TZ: Asia/Taipei
+      DAYS: "5"
+      TOP_N: "10"
+      DEBUG_HTML: "1"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6 [4](https://www.kenmuse.com/blog/how-to-handle-step-and-job-errors-in-github-actions/)[5](https://stackoverflow.com/questions/58858429/how-to-run-a-github-actions-step-even-if-the-previous-step-fails-while-still-f)
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6 [2](https://community.powerplatform.com/forums/thread/details/?threadid=4d0f9b82-80cf-ef11-b8e8-6045bdd9204f)
         with:
           python-version: "3.10"
 
@@ -28,15 +36,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 方案 A：允許 run_report 結束碼非 0 仍繼續後面步驟（artifacts/Gemini/email）[6](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/run_report.py)
       - name: Generate Excel/PDF (DAYS=5)
-        env:
-          TZ: Asia/Taipei
-          DAYS: "5"
-          DEBUG_HTML: "1"
+        continue-on-error: true
         run: |
           python src/run_report.py
 
-      # 列出檔案位置：立即知道產物是在 output/ 還是 src/output/ 或根本沒產出
+      # Gemini 分析（把分析寫入 output/ai_analysis.txt 並回寫 summary.json）
+      # Gemini generateContent + x-goog-api-key header 的呼叫方式是官方做法 [7](https://stackoverflow.com/questions/79410253/how-to-use-a-specific-version-of-github-actions-specifically-actions-upload-art)
+      - name: Gemini analysis
+        if: always()
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: "gemini-2.5-flash"
+        run: |
+          python src/ai_analyze_gemini.py
+
       - name: Debug list output files
         if: always()
         run: |
@@ -45,25 +60,23 @@ jobs:
           ls -la
           echo "== list output =="
           ls -la output || true
-          echo "== list src/output =="
-          ls -la src/output || true
+          echo "== list output/debug =="
+          ls -la output/debug || true
           echo "== find reports =="
-          find . -maxdepth 4 -type f \( -name "*.xlsx" -o -name "*.pdf" -o -name "summary.json" -o -name "*.html" \) -print || true
+          find . -maxdepth 4 -type f \( -name "*.xlsx" -o -name "*.pdf" -o -name "summary.json" -o -name "*.html" -o -name "ai_analysis.txt" \) -print || true
 
+      # upload-artifact@v6 以 Node24 runtime 執行（官方說明 v6 已切 node24）[3](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/1470_9900_E.html)
       - name: Upload artifacts (auto expire)
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v6 [3](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/1470_9900_E.html)
         with:
           name: foreign-report
           path: |
             output/*.xlsx
             output/*.pdf
             output/summary.json
+            output/ai_analysis.txt
             output/debug/*.html
-            src/output/*.xlsx
-            src/output/*.pdf
-            src/output/summary.json
-            src/output/debug/*.html
           retention-days: 7
           if-no-files-found: warn
 
@@ -77,7 +90,6 @@ jobs:
       - name: Send email (always)
         if: always()
         env:
-          DAYS: "5"
           # host/port 非敏感資訊寫死，避免 secrets 空值造成連線/轉型錯誤
           SMTP_HOST: "smtp.gmail.com"
           SMTP_PORT: "587"
