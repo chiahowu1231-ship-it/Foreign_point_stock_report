@@ -47,12 +47,11 @@ def _fmt_int(n):
 def wrap_text(s: str, width: int = 72) -> str:
     """
     iPhone/Apple Mail 友善：將長段落自動換行，不用空白對齊。
-    保留段落（以空行或換行區隔）。
+    保留段落（以換行區隔）。
     """
     s = (s or "").strip()
     if not s:
         return ""
-    # 以換行拆段，清理空段落
     paras = [p.strip() for p in s.split("\n") if p.strip()]
     return "\n\n".join(textwrap.fill(p, width=width) for p in paras)
 
@@ -88,7 +87,7 @@ def build_body(summary: dict):
         lines.append("")
         lines.append(f"本次 Workflow 連結：{server_url}/{repo}/actions/runs/{run_id}")
 
-    # ===== ✅ 每家外資買超 Top 3 =====
+    # ===== 每家外資買超 Top 3 =====
     top_preview = summary.get("top_preview") or []
     top3 = 3
 
@@ -107,7 +106,6 @@ def build_body(summary: dict):
             lines.append(f"■ {broker}")
             lines.append(f"  總淨超：{_fmt_int(total_net)} 張")
 
-            # 每檔一行，避免 iPhone 換行後黏在一起
             for idx, r in enumerate(rows[:top3], start=1):
                 sid = r.get("sid", "")
                 name = r.get("name", "")
@@ -120,7 +118,7 @@ def build_body(summary: dict):
                     f"  {idx}) {sid} {name}｜淨超 {_fmt_int(net)} 張｜均價 {avg}｜現價 {price}｜乖離 {bias}"
                 )
 
-    # ===== ✅ AI 分析（Gemini）=====
+    # ===== AI 分析（Gemini）=====
     ai_text = summary.get("ai_analysis", "")
     ai_provider = summary.get("ai_provider", "")
     ai_model = summary.get("ai_model", "")
@@ -164,7 +162,7 @@ def _safe_int_env(name: str, default: int) -> int:
 
 
 def main():
-    # SMTP 基本參數（host/port 建議寫死在 workflow；此處也做防呆）
+    # SMTP（workflow 會注入；此處也做防呆）
     smtp_host = (os.environ.get("SMTP_HOST", "smtp.gmail.com") or "").strip() or "smtp.gmail.com"
     smtp_port = _safe_int_env("SMTP_PORT", 587)
 
@@ -182,7 +180,6 @@ def main():
 
     summary = load_summary()
 
-    # 你 workflow 會注入 MAIL_SUBJECT；若沒有就用預設
     ymd = datetime.now(TZ).strftime("%Y-%m-%d")
     subject = os.environ.get("MAIL_SUBJECT", f"【外資分點狙擊分析】{ymd}（TW 14:30）")
 
@@ -196,10 +193,8 @@ def main():
         msg["Bcc"] = mail_bcc
     msg["Subject"] = subject
 
-    # 純文字正文
     msg.set_content(build_body(summary))
 
-    # 附件（若存在就附）
     attachments = [
         (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         (pdf, "application/pdf"),
