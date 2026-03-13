@@ -1,17 +1,18 @@
 
 # src/run_report.py
-# 純外資版（a 代號各異 / b 先試 b=a，必要時 fallback b=9900）
+# 純外資整合版（a 代號各異 / b 先試 b=a，必要時 fallback b=9900）
 # ------------------------------------------------------------
-# 功能：
-# - DEBUG_HTML=1 會輸出 output/debug/*.html（E/B 各一份）方便比對
-# - 強化 parse_table：不只 script，也會從 href/onclick/tr html 中抓 GenLink2stk
-# - 避免假成功：
-#     * 若查詢頁面顯示「無此券商分點交易資料」→ 直接換下一個 b
-#     * 若解析空 or E/B 無交集 → 該券商 FAIL
-#     * 若總筆數=0 → summary success=False
-# - Excel：Report + Failures；乖離率條件式上色（淺綠/藍/深紅）
-# - PDF：優先使用 fonts/NotoSansTC-Regular.ttf 嵌入字型（避免亂碼）
-#        若字型缺失，仍產出「提示 PDF」避免 artifacts 找不到
+# 主要功能（整合版）：
+# - 每家外資內部：依「淨超」由大到小排序
+# - 外資排序：依「各外資總淨超」由大到小排序（A1）
+# - summary.json：加入 top_preview（每家 Top 10）供 mailer 直接引用（A2）
+# - Excel：新增 TopByBroker sheet（每家 Top 10）（A3）
+# - DEBUG_HTML=1：輸出 output/debug/*.html（E/B 各一份）
+# - 強化 parse_table：不只 script，也會從 href/onclick/tr html 取 GenLink2stk
+# - yfinance 噪音抑制 + 快取：不再滿版 404/possibly delisted
+# - exit code 規則更合理：
+#     * total_rows==0 或 brokers_ok==0 才 exit 1
+#     * 有資料（total_rows>0）即使 brokers_fail>0 也 exit 0
 
 import os
 import re
@@ -20,6 +21,8 @@ import time
 import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import contextlib
+import io
 
 import pandas as pd
 import requests
@@ -39,7 +42,8 @@ UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-NO_DATA_TEXT = "無此券商分點交易資料"  # 來源頁面會出現的無資料提示
+NO_DATA_TEXT = "無此券商分點交易資料"
+PRICE_CACHE = {}  # 現價快取（避免同股票重複查）
 
 
 def ensure_output_dir():
@@ -168,19 +172,32 @@ def parse_table(html: str) -> dict:
 
 
 def get_stock_price(sid: str) -> float:
-    """嘗試 .TW / .TWO，取最近 1 日 Close。"""
+    """
+    靜音 yfinance 的 404/possibly delisted 噪音 + 快取
+    抓不到就回 0.0（不影響報表產出）
+    """
+    if sid in PRICE_CACHE:
+        return PRICE_CACHE[sid]
+
+    buf = io.StringIO()
+    price = 0.0
+
     for suffix in [".TW", ".TWO"]:
         try:
-            data = yf.Ticker(f"{sid}{suffix}").history(period="1d")
-            if not data.empty:
-                return float(data["Close"].iloc[-1])
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                data = yf.Ticker(f"{sid}{suffix}").history(period="1d")
+            if data is not None and not data.empty:
+                price = float(data["Close"].iloc[-1])
+                break
         except Exception:
             continue
-    return 0.0
+
+    PRICE_CACHE[sid] = price
+    return price
 
 
 def try_fetch_and_parse(a_code: str, b_code: str, days: int):
-    """抓 E/B 並解析；回傳 (qty_map, amt_map, html_qty, html_amt)"""
+    """抓 E/B 並解析；回傳 (qty_map, amt_map, url_qty, url_amt, no_data_page)"""
     url_qty = f"{BASE_URL}?a={a_code}&b={b_code}&c=E&d={days}"
     url_amt = f"{BASE_URL}?a={a_code}&b={b_code}&c=B&d={days}"
 
@@ -190,13 +207,13 @@ def try_fetch_and_parse(a_code: str, b_code: str, days: int):
     dump_debug_html(f"{a_code}_{b_code}_E", html_qty)
     dump_debug_html(f"{a_code}_{b_code}_B", html_amt)
 
-    # 若兩邊都明確顯示無資料，直接回空讓上層換 b
     if (NO_DATA_TEXT in html_qty) and (NO_DATA_TEXT in html_amt):
-        return {}, {}, html_qty, html_amt, url_qty, url_amt, True  # True = no-data page
+        return {}, {}, url_qty, url_amt, True
 
     qty_map = parse_table(html_qty)
     amt_map = parse_table(html_amt)
-    return qty_map, amt_map, html_qty, html_amt, url_qty, url_amt, False
+
+    return qty_map, amt_map, url_qty, url_amt, False
 
 
 def build_report(days: int):
@@ -212,24 +229,22 @@ def build_report(days: int):
     for broker_key, (a_code, broker_label) in LEGEND_BROKERS.items():
         a_code = str(a_code)
 
-        # ✅ 重要：先試 b=a（你提供的大摩有資料的網址就是 a=1470&b=1470）
-        # 若該 b 回 "無此券商分點交易資料"，再 fallback 試 b=9900（但你 debug 顯示 9900 可能常無資料）[1](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/1470_9900_E.html)
+        # 先試 b=a（你已驗證 1470/1360 都是 b=a 有資料）
+        # 若你確定全部都 b=a，可改成 candidate_bs = [a_code] 會更快
         candidate_bs = [a_code, "9900"]
 
         chosen_b = None
         qty_map = amt_map = {}
-        url_qty = url_amt = None
+        url_qty = url_amt = ""
 
         try:
             for b_try in candidate_bs:
-                q_map, a_map, html_q, html_a, u_qty, u_amt, no_data = try_fetch_and_parse(a_code, b_try, days)
+                q_map, a_map, u_qty, u_amt, no_data = try_fetch_and_parse(a_code, b_try, days)
                 url_qty, url_amt = u_qty, u_amt
 
-                # 明確無資料 → 換下一個 b
                 if no_data:
                     continue
 
-                # 解析到任何資料就接受
                 if q_map or a_map:
                     chosen_b = b_try
                     qty_map, amt_map = q_map, a_map
@@ -262,7 +277,7 @@ def build_report(days: int):
                     "大戶": broker_label,
                     "買進": info["buy"],
                     "賣出": info["sell"],
-                    "淨超": net_qty,
+                    "淨超": int(net_qty),
                     "區間均價": avg_cost,
                     "現價": round(price, 2),
                     "乖離率": f"{bias}%",
@@ -282,8 +297,8 @@ def build_report(days: int):
                 "嘗試分點(b)": ",".join(candidate_bs),
                 "券商名稱": broker_label,
                 "錯誤訊息": str(e),
-                "網址(張數E)": url_qty or "",
-                "網址(金額B)": url_amt or "",
+                "網址(張數E)": url_qty,
+                "網址(金額B)": url_amt,
             })
 
     df = pd.DataFrame(rows, columns=[
@@ -302,11 +317,58 @@ def build_report(days: int):
         "brokers_total": int(len(LEGEND_BROKERS)),
         "brokers_ok": broker_ok,
         "brokers_fail": broker_fail,
+        # success 定義：全部券商成功才 True（用於 email 顯示狀態）
         "success": (broker_fail == 0),
         "errors": errors[:50],
     }
 
-    # ✅ 總筆數為 0 → 視為失敗（避免「成功但0筆」）
+    # ===== A1：外資排序 + 每家內部淨超排序 =====
+    if not df.empty:
+        df["淨超"] = pd.to_numeric(df["淨超"], errors="coerce").fillna(0).astype(int)
+
+        broker_order = (
+            df.groupby("大戶")["淨超"]
+              .sum()
+              .sort_values(ascending=False)
+              .index
+              .tolist()
+        )
+        df["大戶"] = pd.Categorical(df["大戶"], categories=broker_order, ordered=True)
+        df = df.sort_values(["大戶", "淨超"], ascending=[True, False]).reset_index(drop=True)
+
+        # 把排序後 df 回存（讓後續 export_excel 使用的 df 已排序）
+        # 注意：df 在此作用域內是局部變數，下面 return 會帶出去
+
+    # ===== A2：summary.json 加入每家外資 Top N（Top 10） =====
+    TOP_N = int(os.getenv("TOP_N", "10"))  # 你指定要 10
+    top_preview = []
+
+    if not df.empty and isinstance(df.get("大戶").dtype, pd.CategoricalDtype):
+        for broker in df["大戶"].cat.categories.tolist():
+            sub = df[df["大戶"] == broker].head(TOP_N)
+            if sub.empty:
+                continue
+
+            top_preview.append({
+                "broker": str(broker),
+                "total_net": int(df[df["大戶"] == broker]["淨超"].sum()),
+                "rows": [
+                    {
+                        "sid": r["代碼"],
+                        "name": r["名稱"],
+                        "net": int(r["淨超"]),
+                        "avg": r["區間均價"],
+                        "price": r["現價"],
+                        "bias": r["乖離率"],
+                    }
+                    for _, r in sub.iterrows()
+                ]
+            })
+
+    summary["top_preview"] = top_preview
+    summary["top_n"] = TOP_N
+
+    # 若總筆數 0 → success=false（避免假成功）
     if summary["total_rows"] == 0:
         summary["success"] = False
         summary["errors"] = (summary.get("errors") or []) + [
@@ -358,6 +420,19 @@ def export_excel(df: pd.DataFrame, fail_df: pd.DataFrame, xlsx_path: str):
             ws.conditional_formatting.add(rng, rule_red)
             ws.conditional_formatting.add(rng, rule_blue)
             ws.conditional_formatting.add(rng, rule_green)
+
+        # ===== A3：TopByBroker sheet（每家外資 Top 10）=====
+        top_n = int(os.getenv("TOP_N", "10"))
+        if df is not None and not df.empty:
+            top_df = df.groupby("大戶", sort=False).head(top_n)
+            top_df.to_excel(writer, index=False, sheet_name="TopByBroker")
+            ws3 = writer.sheets["TopByBroker"]
+            for col, w in {
+                "A": 10, "B": 8, "C": 14, "D": 40,
+                "E": 10, "F": 10, "G": 10, "H": 12,
+                "I": 10, "J": 10
+            }.items():
+                ws3.column_dimensions[col].width = w
 
         if fail_df is not None and not fail_df.empty:
             fail_df.to_excel(writer, index=False, sheet_name="Failures")
@@ -413,7 +488,6 @@ def export_pdf(df: pd.DataFrame, pdf_path: str, summary: dict):
         f"筆數：{summary['total_rows']}",
         normal
     )
-
     elements = [title, Spacer(1, 8), meta, Spacer(1, 12)]
 
     if not os.path.exists(font_path):
@@ -465,9 +539,13 @@ def main():
     print(f"[OK] PDF  : {pdf_path}")
     print(f"[OK] Summary: {summary_path}")
 
-    # 若整體不成功（包含 total_rows==0），讓 step exit 1（方案A：workflow 用 continue-on-error 承接）
-    if not summary["success"]:
+    # ✅ exit code 規則（整合版）
+    # 只有在「完全沒資料」或「全部券商都失敗」才 exit 1
+    if summary.get("total_rows", 0) == 0 or summary.get("brokers_ok", 0) == 0:
         raise SystemExit(1)
+
+    # 只要有資料（total_rows>0），即使 brokers_fail>0 也 exit 0
+    return
 
 
 if __name__ == "__main__":
