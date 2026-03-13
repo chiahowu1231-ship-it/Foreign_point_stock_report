@@ -1,11 +1,17 @@
 
 # src/run_report.py
-# 純外資版（a 代號各異 / b 固定 9900）
-# - DEBUG_HTML=1 會輸出 output/debug/*.html（E/B 各一份）方便比對瀏覽器 vs requests
+# 純外資版（a 代號各異 / b 先試 b=a，必要時 fallback b=9900）
+# ------------------------------------------------------------
+# 功能：
+# - DEBUG_HTML=1 會輸出 output/debug/*.html（E/B 各一份）方便比對
 # - 強化 parse_table：不只 script，也會從 href/onclick/tr html 中抓 GenLink2stk
-# - 避免假成功：若解析空 or E/B 無交集 → 該券商算 FAIL；若總筆數=0 → summary success=False
+# - 避免假成功：
+#     * 若查詢頁面顯示「無此券商分點交易資料」→ 直接換下一個 b
+#     * 若解析空 or E/B 無交集 → 該券商 FAIL
+#     * 若總筆數=0 → summary success=False
+# - Excel：Report + Failures；乖離率條件式上色（淺綠/藍/深紅）
 # - PDF：優先使用 fonts/NotoSansTC-Regular.ttf 嵌入字型（避免亂碼）
-#   若字型缺失：仍會產出「提示用 PDF」避免 artifacts 找不到
+#        若字型缺失，仍產出「提示 PDF」避免 artifacts 找不到
 
 import os
 import re
@@ -20,7 +26,8 @@ import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
 
-# 你的 config.py 必須是：LEGEND_BROKERS = { "1470_F": ("1470","label"), ... }
+# 你的 src/config.py 必須是 tuple 結構：
+# LEGEND_BROKERS = { "1470_F": ("1470","label"), ... }
 from config import LEGEND_BROKERS
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -31,6 +38,8 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+NO_DATA_TEXT = "無此券商分點交易資料"  # 來源頁面會出現的無資料提示
 
 
 def ensure_output_dir():
@@ -65,11 +74,13 @@ def dump_debug_html(tag: str, html: str):
 
 
 def fetch_html(url: str, timeout: int = 20, retries: int = 5, base_sleep: float = 1.0) -> str:
-    """指數退避重試 + jitter（修正：確實會重試到 retries 次）"""
+    """指數退避重試 + jitter（確實重試到 retries 次）"""
     headers = {
         "User-Agent": UA,
         "Referer": "https://fubon-ebrokerdj.fbs.com.tw/",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
     }
 
     last_err = None
@@ -83,8 +94,7 @@ def fetch_html(url: str, timeout: int = 20, retries: int = 5, base_sleep: float 
         except Exception as e:
             last_err = e
 
-        sleep_sec = base_sleep * (2 ** attempt) + random.uniform(0, 0.5)
-        time.sleep(sleep_sec)
+        time.sleep(base_sleep * (2 ** attempt) + random.uniform(0, 0.5))
 
     raise last_err
 
@@ -99,7 +109,6 @@ def parse_table(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     res = {}
 
-    # 同時支援：GenLink2stk('AS2330','台積電') 及 GenLink2stk(\"AS2330\",\"台積電\")
     pat = re.compile(
         r"GenLink2stk\(\s*'AS(\w+)'\s*,\s*'(.+?)'\s*\)"
         r"|GenLink2stk\(\s*\"AS(\w+)\"\s*,\s*\"(.+?)\"\s*\)"
@@ -170,6 +179,26 @@ def get_stock_price(sid: str) -> float:
     return 0.0
 
 
+def try_fetch_and_parse(a_code: str, b_code: str, days: int):
+    """抓 E/B 並解析；回傳 (qty_map, amt_map, html_qty, html_amt)"""
+    url_qty = f"{BASE_URL}?a={a_code}&b={b_code}&c=E&d={days}"
+    url_amt = f"{BASE_URL}?a={a_code}&b={b_code}&c=B&d={days}"
+
+    html_qty = fetch_html(url_qty)
+    html_amt = fetch_html(url_amt)
+
+    dump_debug_html(f"{a_code}_{b_code}_E", html_qty)
+    dump_debug_html(f"{a_code}_{b_code}_B", html_amt)
+
+    # 若兩邊都明確顯示無資料，直接回空讓上層換 b
+    if (NO_DATA_TEXT in html_qty) and (NO_DATA_TEXT in html_amt):
+        return {}, {}, html_qty, html_amt, url_qty, url_amt, True  # True = no-data page
+
+    qty_map = parse_table(html_qty)
+    amt_map = parse_table(html_amt)
+    return qty_map, amt_map, html_qty, html_amt, url_qty, url_amt, False
+
+
 def build_report(days: int):
     start_time = now_taipei()
 
@@ -182,24 +211,32 @@ def build_report(days: int):
 
     for broker_key, (a_code, broker_label) in LEGEND_BROKERS.items():
         a_code = str(a_code)
-        b_code = "9900"  # ✅ 純外資：固定 9900
 
-        url_qty = f"{BASE_URL}?a={a_code}&b={b_code}&c=E&d={days}"
-        url_amt = f"{BASE_URL}?a={a_code}&b={b_code}&c=B&d={days}"
+        # ✅ 重要：先試 b=a（你提供的大摩有資料的網址就是 a=1470&b=1470）
+        # 若該 b 回 "無此券商分點交易資料"，再 fallback 試 b=9900（但你 debug 顯示 9900 可能常無資料）[1](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/1470_9900_E.html)
+        candidate_bs = [a_code, "9900"]
+
+        chosen_b = None
+        qty_map = amt_map = {}
+        url_qty = url_amt = None
 
         try:
-            html_qty = fetch_html(url_qty)
-            html_amt = fetch_html(url_amt)
+            for b_try in candidate_bs:
+                q_map, a_map, html_q, html_a, u_qty, u_amt, no_data = try_fetch_and_parse(a_code, b_try, days)
+                url_qty, url_amt = u_qty, u_amt
 
-            dump_debug_html(f"{a_code}_{b_code}_E", html_qty)
-            dump_debug_html(f"{a_code}_{b_code}_B", html_amt)
+                # 明確無資料 → 換下一個 b
+                if no_data:
+                    continue
 
-            qty_map = parse_table(html_qty)
-            amt_map = parse_table(html_amt)
+                # 解析到任何資料就接受
+                if q_map or a_map:
+                    chosen_b = b_try
+                    qty_map, amt_map = q_map, a_map
+                    break
 
-            # ✅ 若解析結果皆空，視為失敗（避免假成功）
-            if not qty_map and not amt_map:
-                raise RuntimeError("解析結果為空（瀏覽器有資料但程式解析不到：HTML 結構不同或被擋）")
+            if not chosen_b:
+                raise RuntimeError(f"查詢結果：{NO_DATA_TEXT}（已嘗試 b=a 與 b=9900）")
 
             common = set(qty_map.keys()) & set(amt_map.keys())
             if not common:
@@ -242,13 +279,11 @@ def build_report(days: int):
                 "日期": start_time.strftime("%Y%m%d"),
                 "券商key": str(broker_key),
                 "總公司(a)": a_code,
-                "分點(b)": b_code,
+                "嘗試分點(b)": ",".join(candidate_bs),
                 "券商名稱": broker_label,
                 "錯誤訊息": str(e),
-                "網址(張數E)": url_qty,
-                "網址(金額B)": url_amt,
-                "debug_E": f"{a_code}_{b_code}_E.html",
-                "debug_B": f"{a_code}_{b_code}_B.html",
+                "網址(張數E)": url_qty or "",
+                "網址(金額B)": url_amt or "",
             })
 
     df = pd.DataFrame(rows, columns=[
@@ -256,8 +291,7 @@ def build_report(days: int):
     ])
 
     fail_df = pd.DataFrame(failures, columns=[
-        "日期", "券商key", "總公司(a)", "分點(b)", "券商名稱", "錯誤訊息",
-        "網址(張數E)", "網址(金額B)", "debug_E", "debug_B"
+        "日期", "券商key", "總公司(a)", "嘗試分點(b)", "券商名稱", "錯誤訊息", "網址(張數E)", "網址(金額B)"
     ])
 
     summary = {
@@ -272,11 +306,11 @@ def build_report(days: int):
         "errors": errors[:50],
     }
 
-    # ✅ 總筆數為 0 → 直接視為失敗（避免「成功但0筆」）
+    # ✅ 總筆數為 0 → 視為失敗（避免「成功但0筆」）
     if summary["total_rows"] == 0:
         summary["success"] = False
         summary["errors"] = (summary.get("errors") or []) + [
-            "總資料筆數為 0（解析全部為空 / 抓回非資料頁 / 解析規則需調整）"
+            "總資料筆數為 0（全部查無分點交易資料或解析規則需調整）"
         ]
 
     return df, fail_df, summary
@@ -331,13 +365,11 @@ def export_excel(df: pd.DataFrame, fail_df: pd.DataFrame, xlsx_path: str):
             ws2.column_dimensions["A"].width = 10
             ws2.column_dimensions["B"].width = 12
             ws2.column_dimensions["C"].width = 10
-            ws2.column_dimensions["D"].width = 10
+            ws2.column_dimensions["D"].width = 14
             ws2.column_dimensions["E"].width = 35
             ws2.column_dimensions["F"].width = 60
             ws2.column_dimensions["G"].width = 55
             ws2.column_dimensions["H"].width = 55
-            ws2.column_dimensions["I"].width = 22
-            ws2.column_dimensions["J"].width = 22
 
 
 def export_pdf(df: pd.DataFrame, pdf_path: str, summary: dict):
@@ -370,27 +402,23 @@ def export_pdf(df: pd.DataFrame, pdf_path: str, summary: dict):
         normal.fontName = font_name
         title_style.fontName = font_name
     else:
-        # fallback：至少讓 PDF 能生成
         normal.fontName = "Helvetica"
         title_style.fontName = "Helvetica"
 
     title = Paragraph("【外資分點狙擊分析】報表", title_style)
     meta = Paragraph(
-        f"Generated: {summary['generated_at']} ({summary['timezone']}) &nbsp; "
-        f"Days: {summary['days']} &nbsp; "
-        f"Status: {'OK' if summary['success'] else 'PARTIAL/FAIL'} &nbsp; "
-        f"Rows: {summary['total_rows']}",
+        f"產生時間：{summary['generated_at']}（{summary['timezone']}）　"
+        f"查詢區間：{summary['days']} 日　"
+        f"結果：{'成功' if summary['success'] else '失敗/部分失敗'}　"
+        f"筆數：{summary['total_rows']}",
         normal
     )
 
     elements = [title, Spacer(1, 8), meta, Spacer(1, 12)]
 
     if not os.path.exists(font_path):
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph(
-            "Font missing: fonts/NotoSansTC-Regular.ttf (PDF generated with Helvetica).",
-            normal
-        ))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph("⚠️ 缺少字型 fonts/NotoSansTC-Regular.ttf（PDF 以 Helvetica 產生）", normal))
 
     header = list(df.columns) if df is not None and not df.empty else ["日期","代碼","名稱","大戶","買進","賣出","淨超","區間均價","現價","乖離率"]
     data = [header] + (df.astype(str).values.tolist() if df is not None and not df.empty else [])
@@ -409,7 +437,7 @@ def export_pdf(df: pd.DataFrame, pdf_path: str, summary: dict):
 
     if summary.get("errors"):
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Errors (top 20):", normal))
+        elements.append(Paragraph("錯誤摘要（前 20 筆）：", normal))
         for e in summary["errors"][:20]:
             elements.append(Paragraph(f"- {e}", normal))
 
@@ -437,7 +465,7 @@ def main():
     print(f"[OK] PDF  : {pdf_path}")
     print(f"[OK] Summary: {summary_path}")
 
-    # 若整體不成功（包含 total_rows==0 的情況），讓 step fail
+    # 若整體不成功（包含 total_rows==0），讓 step exit 1（方案A：workflow 用 continue-on-error 承接）
     if not summary["success"]:
         raise SystemExit(1)
 
