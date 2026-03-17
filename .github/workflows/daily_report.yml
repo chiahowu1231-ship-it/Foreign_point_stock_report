@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # 提前用 Node24 跑 JavaScript actions，提早發現相容性問題
+      # 提前用 Node24 跑 JavaScript actions，提早驗證相容性
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
       TZ: Asia/Taipei
@@ -33,22 +33,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 方案 A：run_report 結束碼非 0 仍繼續後面步驟（artifacts / Gemini / email）
+      # 方案 A：run_report exit code 非 0 仍繼續後面 steps
       - name: Generate Excel/PDF (DAYS=5)
         continue-on-error: true
         run: |
           python src/run_report.py
 
-      - name: Gemini analysis
+      # Gemini 3.1 Pro Preview：官方 model code gemini-3.1-pro-preview [1](https://www.datastudios.org/post/gemini-token-limits-and-context-windows)[2](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
+      # 輸出不限制：刻意不設定 GEMINI_MAX_OUTPUT_TOKENS，讓 ai_analyze_gemini.py 不送 maxOutputTokens
+      - name: Gemini analysis (gemini-3.1-pro-preview, no maxOutputTokens)
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-2.5-flash"
-          GEMINI_MAX_OUTPUT_TOKENS: "1400"
+          GEMINI_MODEL: "gemini-3.1-pro-preview"
+          GEMINI_TEMPERATURE: "0.2"
         run: |
           python src/ai_analyze_gemini.py
 
-      # ✅ 你要求新增：確認 Gemini 分析輸出長度（safe，不會洩漏敏感資訊）
+      # 你要求的 safe 驗證：檢查 ai_analysis 長度與行數（不洩漏敏感資訊）[5](https://www.datastudios.org/post/google-gemini-context-window-token-limits-model-comparison-and-workflow-strategies-for-late-2025)
       - name: Verify Gemini analysis length (safe)
         if: always()
         run: |
@@ -60,6 +62,8 @@ jobs:
           t = s.get("ai_analysis", "") or ""
           print("ai_provider =", s.get("ai_provider"))
           print("ai_model =", s.get("ai_model"))
+          print("ai_analyzer_version =", s.get("ai_analyzer_version"))
+          print("ai_max_output_tokens_used =", s.get("ai_max_output_tokens_used"))
           print("ai_analysis_len_chars =", len(t))
           print("ai_analysis_lines =", len(t.splitlines()))
           PY
