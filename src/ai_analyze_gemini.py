@@ -1,3 +1,10 @@
+# src/ai_analyze_gemini.py
+# Gemini analysis runner (fix-up enabled, retries enabled)
+# - Default model: gemini-2.5-pro
+# - Supports retries/backoff for 429/5xx
+# - Ensures exceptions are raised correctly (never raises None)
+# - Writes output/ai_analysis.txt and embeds into output/summary.json
+
 import os
 import json
 import re
@@ -9,25 +16,25 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Taipei")
 
-# ✅ 預設改成 Gemini 2.5 Pro（你要試的模型）
+# Default to 2.5-pro (can be overridden by workflow env)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
-
 ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
 SUMMARY_PATH = os.path.join("output", "summary.json")
 AI_TXT_PATH = os.path.join("output", "ai_analysis.txt")
 
 TEMP = float(os.getenv("GEMINI_TEMPERATURE", "0.2"))
 
-# ✅ 若你要「不限制輸出」，請不要在 workflow 設 GEMINI_MAX_OUTPUT_TOKENS
-# 這裡預設空字串 -> MAX_OUT=None -> 不送 maxOutputTokens
+# If you want to limit output, set GEMINI_MAX_OUTPUT_TOKENS=1400 (or other number).
+# If unset/empty, we do NOT send maxOutputTokens.
 MAX_OUT_RAW = (os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "") or "").strip()
 MAX_OUT = int(MAX_OUT_RAW) if MAX_OUT_RAW.isdigit() else None
 
-# 重試參數（避免 429）
+# Retry/backoff controls (for 429 / 5xx)
 RETRIES = int(os.getenv("GEMINI_RETRIES", "5"))
 BASE_SLEEP = float(os.getenv("GEMINI_RETRY_BASE_SLEEP", "2.0"))
 
-ANALYZER_VERSION = "v6-gemini-2.5-pro-fixup-30lines-AE"
+ANALYZER_VERSION = "v7-gemini-2.5-pro-fixup-30lines-AE-retry-safe"
 
 
 def load_summary():
@@ -53,10 +60,17 @@ def embed(summary: dict, text: str):
     summary["ai_analysis"] = (text or "").strip()
     summary["ai_analyzer_version"] = ANALYZER_VERSION
     summary["ai_temperature_used"] = TEMP
-    summary["ai_max_output_tokens_used"] = MAX_OUT
+    summary["ai_max_output_tokens_used"] = MAX_OUT  # None means not sending maxOutputTokens
 
 
 def build_prompt(summary: dict) -> str:
+    """
+    Trading-oriented prompt with hard rules:
+    - At least 30 lines
+    - A/B/D >= 3 bullet points
+    - C must contain 5 stocks, each stock must include 3 lines (entry/stop/exit)
+    - No news/fundamentals/themes unless provided (use only provided data)
+    """
     top_preview = summary.get("top_preview") or []
     days = summary.get("days")
     gen_at = summary.get("generated_at")
@@ -64,6 +78,7 @@ def build_prompt(summary: dict) -> str:
     ok = summary.get("brokers_ok", 0)
     fail = summary.get("brokers_fail", 0)
     top_n = summary.get("top_n", 10)
+    errors = summary.get("errors") or []
 
     lines = []
     lines.append("你是一位資深台股交易員與籌碼分析師。請用繁體中文、純文字、手機好讀格式輸出。")
@@ -71,6 +86,8 @@ def build_prompt(summary: dict) -> str:
     lines.append("不要表格、不要用空白對齊；段落之間空一行；每點以 1) 2) 3) 編號。")
     lines.append("")
     lines.append(f"報表資訊：產生時間={gen_at}；近{days}日；資料筆數={total_rows}；券商OK={ok}；FAIL={fail}")
+    if errors:
+        lines.append("注意：若 FAIL>0，只能就『有資料的外資』下結論；缺資料者不得推論。")
     lines.append("")
 
     lines.append(f"外資明細（依外資總淨超排序）Top{top_n}：")
@@ -85,7 +102,10 @@ def build_prompt(summary: dict) -> str:
     lines.append("請依照以下輸出結構（每區塊中間空一行）：")
     lines.append("A) 今日交易結論（3~5點）：用『因此/所以』描述，給出優先順序。")
     lines.append("B) 外資力量排行榜：列出『總淨超Top3外資』，各至少 3 點（偏多/偏短/偏觀察）。")
-    lines.append("C) 明日觀察清單（5檔）：每檔必含三行：進場條件 / 停損邏輯 / 了結邏輯。")
+    lines.append("C) 明日觀察清單（5檔）：每檔必含三行：")
+    lines.append("   1) 進場條件（文字描述：突破/回測/不跌破均價等；不要捏造K線數值）")
+    lines.append("   2) 停損邏輯（用均價/乖離/淨超集中度推導）")
+    lines.append("   3) 了結邏輯（乖離擴大、現價遠離均價、淨超集中反轉等）")
     lines.append("D) 風控提醒（至少3點）。")
     lines.append("E) 一句話摘要（≤25字）。")
     lines.append("")
@@ -99,24 +119,31 @@ def build_prompt(summary: dict) -> str:
 
 
 def fixup_prompt(draft: str) -> str:
+    """
+    Fix-up prompt: only fill missing parts, output a complete A~E version.
+    """
     return "\n".join([
         "你是資深台股交易員與籌碼分析師。以下草稿不完整，請你『只補齊不足』並輸出完整 A~E。",
         "硬性規則：全文至少30行；A/B/D 各至少3點；C 必須5檔且每檔3行（進場/停損/了結）。",
         "請直接輸出『完整版本』，保持純文字、段落間空一行、每點用 1) 2) 3)。",
         "",
         "【草稿開始】",
-        draft.strip(),
+        (draft or "").strip(),
         "【草稿結束】",
     ])
 
 
 def call_gemini(prompt: str) -> str:
+    """
+    Calls Gemini generateContent with retries/backoff on 429/5xx.
+    Guarantees to raise a proper Exception when failing (never raises None).
+    """
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY missing (check GitHub Secrets).")
 
     headers = {
-        "x-goog-api-key": api_key,  # Gemini API 標準 header [4](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-preview)[5](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
+        "x-goog-api-key": api_key,
         "Content-Type": "application/json",
     }
 
@@ -130,12 +157,16 @@ def call_gemini(prompt: str) -> str:
     }
 
     last_exc = None
+    last_status = None
+
     for attempt in range(RETRIES):
         try:
             r = requests.post(ENDPOINT, headers=headers, json=payload, timeout=180)
+            last_status = r.status_code
 
-            # 429 / 5xx -> 指數退避
+            # 429/5xx: set last_exc and retry with backoff
             if r.status_code in (429, 500, 502, 503, 504):
+                last_exc = RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:200]}")
                 sleep_s = BASE_SLEEP * (2 ** attempt) + random.uniform(0, 0.8)
                 print(f"[WARN] Gemini HTTP {r.status_code} retry in {sleep_s:.1f}s ({attempt+1}/{RETRIES})")
                 time.sleep(sleep_s)
@@ -158,10 +189,16 @@ def call_gemini(prompt: str) -> str:
             print(f"[WARN] Gemini exception retry in {sleep_s:.1f}s: {type(e).__name__}: {e}")
             time.sleep(sleep_s)
 
-    raise last_exc
+    # ✅ Critical fix: always raise a BaseException
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Gemini request failed after retries (last_status={last_status})")
 
 
 def validate(text: str) -> list:
+    """
+    Returns a list of problems. Empty list means pass.
+    """
     s = (text or "").strip()
     problems = []
     if not s:
@@ -216,13 +253,14 @@ def main():
         draft = call_gemini(prompt)
         p1 = validate(draft)
 
+        # Fix-up pass if not satisfied
         if p1:
             print("[WARN] first pass not enough:", "; ".join(p1))
             final_text = call_gemini(fixup_prompt(draft))
             p2 = validate(final_text)
             if p2:
                 print("[WARN] second pass still not enough:", "; ".join(p2))
-                analysis = final_text
+                analysis = final_text  # still write something
             else:
                 analysis = final_text
         else:
