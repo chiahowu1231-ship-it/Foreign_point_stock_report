@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # 提前用 Node24 跑 JavaScript actions，提早發現相容性問題
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
       TZ: Asia/Taipei
       DAYS: "5"
       TOP_N: "10"
@@ -31,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 方案 A：run_report 即使 exit 1 也不中斷後續 steps
+      # 方案 A：run_report 結束碼非 0 仍繼續後面步驟（artifacts / Gemini / email）
       - name: Generate Excel/PDF (DAYS=5)
         continue-on-error: true
         run: |
@@ -46,23 +48,21 @@ jobs:
         run: |
           python src/ai_analyze_gemini.py
 
-      # ✅ 兩個安全驗證：確保 ai_analysis 真的進 summary、mailer 真的有讀 ai_analysis
-      - name: Verify summary has ai_analysis (safe)
+      # ✅ 你要求新增：確認 Gemini 分析輸出長度（safe，不會洩漏敏感資訊）
+      - name: Verify Gemini analysis length (safe)
         if: always()
         run: |
           python - <<'PY'
           import json
-          p="output/summary.json"
-          s=json.load(open(p,"r",encoding="utf-8"))
-          print("has_ai_analysis =", "ai_analysis" in s, "len =", len(s.get("ai_analysis","")))
+          p = "output/summary.json"
+          with open(p, "r", encoding="utf-8") as f:
+              s = json.load(f)
+          t = s.get("ai_analysis", "") or ""
           print("ai_provider =", s.get("ai_provider"))
+          print("ai_model =", s.get("ai_model"))
+          print("ai_analysis_len_chars =", len(t))
+          print("ai_analysis_lines =", len(t.splitlines()))
           PY
-
-      - name: Verify mailer has AI block (safe)
-        if: always()
-        run: |
-          grep -n "ai_analysis" src/mailer.py || true
-          grep -n "【AI 分析】" src/mailer.py || true
 
       - name: Upload artifacts (auto expire)
         if: always()
