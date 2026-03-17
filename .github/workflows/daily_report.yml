@@ -11,9 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # 提前用 Node24 跑 JavaScript actions，提早驗證相容性
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
       TZ: Asia/Taipei
       DAYS: "5"
       TOP_N: "10"
@@ -33,24 +31,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 方案 A：run_report exit code 非 0 仍繼續後面 steps
+      # 方案 A：run_report exit code 非 0 仍繼續後面 steps（artifacts / Gemini / email）
       - name: Generate Excel/PDF (DAYS=5)
         continue-on-error: true
         run: |
           python src/run_report.py
 
-      # Gemini 3.1 Pro Preview：官方 model code gemini-3.1-pro-preview [1](https://www.datastudios.org/post/gemini-token-limits-and-context-windows)[2](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
-      # 輸出不限制：刻意不設定 GEMINI_MAX_OUTPUT_TOKENS，讓 ai_analyze_gemini.py 不送 maxOutputTokens
-      - name: Gemini analysis (gemini-3.1-pro-preview, no maxOutputTokens)
+      # ✅ 改成 Gemini 2.5 Pro（你要試的模型）[1](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference)
+      # Gemini API generateContent + x-goog-api-key 為官方標準驗證/呼叫方式[2](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-preview)[3](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
+      - name: Gemini analysis (gemini-2.5-pro + retries)
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-3.1-pro-preview"
+          GEMINI_MODEL: "gemini-2.5-pro"
           GEMINI_TEMPERATURE: "0.2"
+
+          # ✅ retries env：避免偶發 429/5xx（需你的 ai_analyze_gemini.py 內有讀取這兩個 env）
+          GEMINI_RETRIES: "5"
+          GEMINI_RETRY_BASE_SLEEP: "2.0"
+
+          # 若你要固定輸出長度，可解除註解（不設表示由腳本決定是否送 maxOutputTokens）
+          # GEMINI_MAX_OUTPUT_TOKENS: "1400"
         run: |
           python src/ai_analyze_gemini.py
 
-      # 你要求的 safe 驗證：檢查 ai_analysis 長度與行數（不洩漏敏感資訊）[5](https://www.datastudios.org/post/google-gemini-context-window-token-limits-model-comparison-and-workflow-strategies-for-late-2025)
+      # ✅ safe verify：確認 ai_analysis 寫入了多少字/多少行（不洩漏敏感資訊）
       - name: Verify Gemini analysis length (safe)
         if: always()
         run: |
@@ -67,6 +72,15 @@ jobs:
           print("ai_analysis_len_chars =", len(t))
           print("ai_analysis_lines =", len(t.splitlines()))
           PY
+
+      # （可選，但我很建議）確保 mailer 是新版且包含 AI 區塊
+      - name: Verify mailer has AI block (safe)
+        if: always()
+        run: |
+          echo "== grep ai_analysis in src/mailer.py =="
+          grep -n "ai_analysis" src/mailer.py || true
+          echo "== grep AI marker in src/mailer.py =="
+          grep -n "【AI 分析】" src/mailer.py || true
 
       - name: Upload artifacts (auto expire)
         if: always()
