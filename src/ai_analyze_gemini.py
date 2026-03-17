@@ -1,30 +1,33 @@
 import os
 import json
 import re
+import time
+import random
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("Asia/Taipei")
 
-# 你指定：使用 Gemini 3.1 Pro Preview（官方 model code）[1](https://www.datastudios.org/post/gemini-token-limits-and-context-windows)[2](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview")
+# ✅ 預設改成 Gemini 2.5 Pro（你要試的模型）
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
-# Gemini Developer API generateContent endpoint（官方 API reference）[3](https://deepmind.google/models/model-cards/gemini-3-1-flash-lite/)[4](https://www.datastudios.org/post/google-gemini-context-window-token-limits-model-comparison-and-workflow-strategies-for-late-2025)
 ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-
 SUMMARY_PATH = os.path.join("output", "summary.json")
 AI_TXT_PATH = os.path.join("output", "ai_analysis.txt")
 
-# 你可以在 workflow 注入覆蓋
 TEMP = float(os.getenv("GEMINI_TEMPERATURE", "0.2"))
 
-# 建議仍提供 maxOutputTokens（可用 env 控制）
-# 若你想「不限制」，把 GEMINI_MAX_OUTPUT_TOKENS 留空即可（腳本會自動不送 maxOutputTokens）
-MAX_OUT_RAW = (os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1400") or "").strip()
+# ✅ 若你要「不限制輸出」，請不要在 workflow 設 GEMINI_MAX_OUTPUT_TOKENS
+# 這裡預設空字串 -> MAX_OUT=None -> 不送 maxOutputTokens
+MAX_OUT_RAW = (os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "") or "").strip()
 MAX_OUT = int(MAX_OUT_RAW) if MAX_OUT_RAW.isdigit() else None
 
-ANALYZER_VERSION = "v5-gemini-3.1-pro-fixup-30lines-AE"
+# 重試參數（避免 429）
+RETRIES = int(os.getenv("GEMINI_RETRIES", "5"))
+BASE_SLEEP = float(os.getenv("GEMINI_RETRY_BASE_SLEEP", "2.0"))
+
+ANALYZER_VERSION = "v6-gemini-2.5-pro-fixup-30lines-AE"
 
 
 def load_summary():
@@ -50,16 +53,10 @@ def embed(summary: dict, text: str):
     summary["ai_analysis"] = (text or "").strip()
     summary["ai_analyzer_version"] = ANALYZER_VERSION
     summary["ai_temperature_used"] = TEMP
-    summary["ai_max_output_tokens_used"] = MAX_OUT  # None 代表未送 maxOutputTokens
+    summary["ai_max_output_tokens_used"] = MAX_OUT
 
 
 def build_prompt(summary: dict) -> str:
-    """
-    交易導向 + 硬性規則（你指定）
-    - 全文至少 30 行
-    - A/B/D 各至少 3 點
-    - C 必須 5 檔、每檔 3 行（進場/停損/了結）
-    """
     top_preview = summary.get("top_preview") or []
     days = summary.get("days")
     gen_at = summary.get("generated_at")
@@ -67,7 +64,6 @@ def build_prompt(summary: dict) -> str:
     ok = summary.get("brokers_ok", 0)
     fail = summary.get("brokers_fail", 0)
     top_n = summary.get("top_n", 10)
-    errors = summary.get("errors") or []
 
     lines = []
     lines.append("你是一位資深台股交易員與籌碼分析師。請用繁體中文、純文字、手機好讀格式輸出。")
@@ -75,8 +71,6 @@ def build_prompt(summary: dict) -> str:
     lines.append("不要表格、不要用空白對齊；段落之間空一行；每點以 1) 2) 3) 編號。")
     lines.append("")
     lines.append(f"報表資訊：產生時間={gen_at}；近{days}日；資料筆數={total_rows}；券商OK={ok}；FAIL={fail}")
-    if errors:
-        lines.append("注意：若 FAIL>0，只能就『有資料的外資』下結論；缺資料者不得推論。")
     lines.append("")
 
     lines.append(f"外資明細（依外資總淨超排序）Top{top_n}：")
@@ -91,10 +85,7 @@ def build_prompt(summary: dict) -> str:
     lines.append("請依照以下輸出結構（每區塊中間空一行）：")
     lines.append("A) 今日交易結論（3~5點）：用『因此/所以』描述，給出優先順序。")
     lines.append("B) 外資力量排行榜：列出『總淨超Top3外資』，各至少 3 點（偏多/偏短/偏觀察）。")
-    lines.append("C) 明日觀察清單（5檔）：每檔必含三行：")
-    lines.append("   1) 進場條件（文字描述：突破/回測/不跌破均價等；不要捏造K線數值）")
-    lines.append("   2) 停損邏輯（用均價/乖離/淨超集中度推導）")
-    lines.append("   3) 了結邏輯（乖離擴大、現價遠離均價、淨超集中反轉等）")
+    lines.append("C) 明日觀察清單（5檔）：每檔必含三行：進場條件 / 停損邏輯 / 了結邏輯。")
     lines.append("D) 風控提醒（至少3點）。")
     lines.append("E) 一句話摘要（≤25字）。")
     lines.append("")
@@ -108,9 +99,6 @@ def build_prompt(summary: dict) -> str:
 
 
 def fixup_prompt(draft: str) -> str:
-    """
-    補齊 prompt：把草稿貼回去，要求「只補不足」並輸出完整 A~E
-    """
     return "\n".join([
         "你是資深台股交易員與籌碼分析師。以下草稿不完整，請你『只補齊不足』並輸出完整 A~E。",
         "硬性規則：全文至少30行；A/B/D 各至少3點；C 必須5檔且每檔3行（進場/停損/了結）。",
@@ -128,8 +116,7 @@ def call_gemini(prompt: str) -> str:
         raise RuntimeError("GEMINI_API_KEY missing (check GitHub Secrets).")
 
     headers = {
-        # 官方 API reference：使用 x-goog-api-key header 帶 API key [3](https://deepmind.google/models/model-cards/gemini-3-1-flash-lite/)[4](https://www.datastudios.org/post/google-gemini-context-window-token-limits-model-comparison-and-workflow-strategies-for-late-2025)
-        "x-goog-api-key": api_key,
+        "x-goog-api-key": api_key,  # Gemini API 標準 header [4](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-preview)[5](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
         "Content-Type": "application/json",
     }
 
@@ -142,39 +129,51 @@ def call_gemini(prompt: str) -> str:
         "generationConfig": gen_cfg,
     }
 
-    r = requests.post(ENDPOINT, headers=headers, json=payload, timeout=180)
-    r.raise_for_status()
-    data = r.json()
+    last_exc = None
+    for attempt in range(RETRIES):
+        try:
+            r = requests.post(ENDPOINT, headers=headers, json=payload, timeout=180)
 
-    # 串接所有 parts，避免只取到第一段（你之前短回的典型原因）
-    cands = data.get("candidates") or []
-    if not cands:
-        return json.dumps(data, ensure_ascii=False)
+            # 429 / 5xx -> 指數退避
+            if r.status_code in (429, 500, 502, 503, 504):
+                sleep_s = BASE_SLEEP * (2 ** attempt) + random.uniform(0, 0.8)
+                print(f"[WARN] Gemini HTTP {r.status_code} retry in {sleep_s:.1f}s ({attempt+1}/{RETRIES})")
+                time.sleep(sleep_s)
+                continue
 
-    parts = (cands[0].get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts).strip()
-    return text if text else json.dumps(data, ensure_ascii=False)
+            r.raise_for_status()
+            data = r.json()
+
+            cands = data.get("candidates") or []
+            if not cands:
+                return json.dumps(data, ensure_ascii=False)
+
+            parts = (cands[0].get("content") or {}).get("parts") or []
+            text = "".join(p.get("text", "") for p in parts).strip()
+            return text if text else json.dumps(data, ensure_ascii=False)
+
+        except Exception as e:
+            last_exc = e
+            sleep_s = BASE_SLEEP * (2 ** attempt) + random.uniform(0, 0.8)
+            print(f"[WARN] Gemini exception retry in {sleep_s:.1f}s: {type(e).__name__}: {e}")
+            time.sleep(sleep_s)
+
+    raise last_exc
 
 
 def validate(text: str) -> list:
-    """
-    回傳問題清單；空 list 表示通過
-    """
     s = (text or "").strip()
     problems = []
     if not s:
         return ["empty"]
 
-    # 行數至少 30
     if len(s.splitlines()) < 30:
         problems.append("line_count<30")
 
-    # 必須包含 A~E
     for key in ["A)", "B)", "C)", "D)", "E)"]:
         if key not in s:
             problems.append(f"missing {key}")
 
-    # A/B/D 各至少 3 點
     def count_points(prefix: str) -> int:
         i = s.find(prefix)
         if i < 0:
@@ -193,7 +192,6 @@ def validate(text: str) -> list:
         if count_points(sec) < 3:
             problems.append(f"{sec} points<3")
 
-    # C 至少 5 檔（用編號項目判斷）
     c_i = s.find("C)")
     if c_i >= 0:
         d_i = s.find("D)", c_i)
@@ -209,22 +207,22 @@ def main():
     prompt = build_prompt(summary)
 
     print(f"[INFO] analyzer={ANALYZER_VERSION}")
-    print(f"[INFO] model={GEMINI_MODEL}")  # gemini-3.1-pro-preview [1](https://www.datastudios.org/post/gemini-token-limits-and-context-windows)[2](https://futureagi.com/blogs/google-gemini-2-5-pro-2025)
+    print(f"[INFO] model={GEMINI_MODEL}")
     print(f"[INFO] temperature={TEMP}")
     print(f"[INFO] maxOutputTokens={'NONE' if MAX_OUT is None else MAX_OUT}")
+    print(f"[INFO] retries={RETRIES} base_sleep={BASE_SLEEP}")
 
     try:
         draft = call_gemini(prompt)
         p1 = validate(draft)
 
-        # 不達標 → 第二輪補齊
         if p1:
             print("[WARN] first pass not enough:", "; ".join(p1))
             final_text = call_gemini(fixup_prompt(draft))
             p2 = validate(final_text)
             if p2:
                 print("[WARN] second pass still not enough:", "; ".join(p2))
-                analysis = final_text  # 仍寫入，避免 mailer 空白
+                analysis = final_text
             else:
                 analysis = final_text
         else:
