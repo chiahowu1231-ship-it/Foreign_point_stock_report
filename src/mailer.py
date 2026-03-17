@@ -1,4 +1,3 @@
-
 # src/mailer.py
 import os
 import json
@@ -45,10 +44,6 @@ def _fmt_int(n):
 
 
 def wrap_text(s: str, width: int = 72) -> str:
-    """
-    iPhone/Apple Mail 友善：將長段落自動換行，不用空白對齊。
-    保留段落（以換行區隔）。
-    """
     s = (s or "").strip()
     if not s:
         return ""
@@ -57,13 +52,6 @@ def wrap_text(s: str, width: int = 72) -> str:
 
 
 def build_body(summary: dict):
-    """
-    純文字排版（iPhone/Apple Mail 友善）：
-    - 不用表格、不用等寬對齊
-    - 每家外資之間空一行
-    - Top3 用 1) 2) 3) 條列
-    - AI 分析以段落呈現，自動換行
-    """
     ok = summary.get("success", False)
     status_text = "成功" if ok else "失敗/部分失敗"
 
@@ -79,7 +67,6 @@ def build_body(summary: dict):
         f"分點狀態：OK {summary.get('brokers_ok', 0)} / FAIL {summary.get('brokers_fail', 0)}（總計 {summary.get('brokers_total', 0)}）"
     )
 
-    # Workflow 連結
     server_url = os.getenv("GITHUB_SERVER_URL")
     repo = os.getenv("GITHUB_REPOSITORY")
     run_id = os.getenv("GITHUB_RUN_ID")
@@ -87,12 +74,10 @@ def build_body(summary: dict):
         lines.append("")
         lines.append(f"本次 Workflow 連結：{server_url}/{repo}/actions/runs/{run_id}")
 
-    # ===== 每家外資買超 Top 3 =====
+    # Top 3
     top_preview = summary.get("top_preview") or []
-    top3 = 3
-
     lines.append("")
-    lines.append(f"【每家外資買超 Top {top3}】（依外資總淨超排序）")
+    lines.append("【每家外資買超 Top 3】（依外資總淨超排序）")
 
     if not top_preview:
         lines.append("本次無可用 Top 資料（可能當天無資料或尚未產生 top_preview）。")
@@ -106,19 +91,18 @@ def build_body(summary: dict):
             lines.append(f"■ {broker}")
             lines.append(f"  總淨超：{_fmt_int(total_net)} 張")
 
-            for idx, r in enumerate(rows[:top3], start=1):
+            for idx, r in enumerate(rows[:3], start=1):
                 sid = r.get("sid", "")
                 name = r.get("name", "")
                 net = r.get("net", 0)
                 avg = r.get("avg", "")
                 price = r.get("price", "")
                 bias = r.get("bias", "")
-
                 lines.append(
                     f"  {idx}) {sid} {name}｜淨超 {_fmt_int(net)} 張｜均價 {avg}｜現價 {price}｜乖離 {bias}"
                 )
 
-    # ===== AI 分析（Gemini）=====
+    # AI Analysis
     ai_text = summary.get("ai_analysis", "")
     ai_provider = summary.get("ai_provider", "")
     ai_model = summary.get("ai_model", "")
@@ -139,7 +123,6 @@ def build_body(summary: dict):
     else:
         lines.append("本次尚未取得 AI 分析（可能未設定 GEMINI_API_KEY 或分析步驟未執行）。")
 
-    # ===== 錯誤摘要 =====
     if summary.get("errors"):
         lines.append("")
         lines.append("抓取錯誤摘要（前 10 筆）：")
@@ -162,7 +145,6 @@ def _safe_int_env(name: str, default: int) -> int:
 
 
 def main():
-    # SMTP（workflow 會注入；此處也做防呆）
     smtp_host = (os.environ.get("SMTP_HOST", "smtp.gmail.com") or "").strip() or "smtp.gmail.com"
     smtp_port = _safe_int_env("SMTP_PORT", 587)
 
@@ -195,11 +177,10 @@ def main():
 
     msg.set_content(build_body(summary))
 
-    attachments = [
+    for fpath, mime in [
         (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         (pdf, "application/pdf"),
-    ]
-    for fpath, mime in attachments:
+    ]:
         if fpath and os.path.exists(fpath):
             with open(fpath, "rb") as f:
                 data = f.read()
