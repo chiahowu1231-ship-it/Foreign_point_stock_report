@@ -43,6 +43,19 @@ def _fmt_int(n):
         return str(n)
 
 
+def _fmt_billion(n):
+    """將元轉為億元顯示"""
+    try:
+        v = int(n)
+        if abs(v) >= 1e8:
+            return f"{v/1e8:+.1f}億"
+        elif abs(v) >= 1e4:
+            return f"{v/1e4:+.0f}萬"
+        return f"{v:+,}"
+    except Exception:
+        return str(n)
+
+
 def wrap_text(s: str, width: int = 72) -> str:
     s = (s or "").strip()
     if not s:
@@ -107,6 +120,100 @@ def build_body(summary: dict):
     ai_provider = summary.get("ai_provider", "")
     ai_model = summary.get("ai_model", "")
 
+    # ===== 大盤籌碼摘要（v9 新增）=====
+    market = summary.get("market_data") or {}
+    has_market = False
+
+    # 三大法人
+    inst = market.get("institutional") or []
+    if inst:
+        has_market = True
+        lines.append("")
+        lines.append("【三大法人買賣超】（近日，億元）")
+        for d in inst[:6]:
+            fg = d["foreign"]["net"]
+            tr = d["trust"]["net"]
+            dl = d["dealer"]["net"]
+            total = d.get("total_net", fg + tr + dl)
+            lines.append(
+                f"  {d['date']}｜外資 {_fmt_billion(fg)}｜投信 {_fmt_billion(tr)}｜自營 {_fmt_billion(dl)}｜合計 {_fmt_billion(total)}"
+            )
+
+    # 大盤量能
+    taiex = market.get("taiex") or []
+    if taiex:
+        has_market = True
+        lines.append("")
+        lines.append("【大盤指數＋成交金額】")
+        for d in taiex[:6]:
+            amt = d.get("amount_billion", 0)
+            close_val = d.get("close", 0)
+            chg = d.get("change", 0)
+            sign = "+" if chg > 0 else ""
+            idx_str = f"收盤 {close_val}" if close_val else ""
+            chg_str = f"漲跌 {sign}{chg}" if chg else ""
+            lines.append(f"  {d['date']}｜{idx_str}｜{chg_str}｜成交 {amt:.0f}億")
+
+        # 量能比較
+        if len(taiex) >= 2:
+            today_amt = taiex[0].get("amount_billion", 0)
+            prev_amts = [d.get("amount_billion", 0) for d in taiex[1:6]]
+            avg5 = sum(prev_amts) / max(len(prev_amts), 1) if prev_amts else 0
+            if avg5 > 0:
+                ratio = today_amt / avg5
+                if ratio > 1.2:
+                    lines.append(f"  ★ 今日 {today_amt:.0f}億 vs 5日均 {avg5:.0f}億 → 放量 {ratio:.1f}倍")
+                elif ratio < 0.8:
+                    lines.append(f"  ★ 今日 {today_amt:.0f}億 vs 5日均 {avg5:.0f}億 → 縮量 {ratio:.1f}倍")
+                else:
+                    lines.append(f"  ★ 今日 {today_amt:.0f}億 vs 5日均 {avg5:.0f}億 → 持平")
+
+    # 融資融券
+    margin = market.get("margin") or []
+    if margin:
+        has_market = True
+        lines.append("")
+        lines.append("【融資融券變化】")
+        for d in margin[:3]:
+            mc = d.get("margin_change", 0)
+            mb = d.get("margin_balance", 0)
+            sc = d.get("short_change", 0)
+            sb = d.get("short_balance", 0)
+            lines.append(
+                f"  {d['date']}｜融資增減 {_fmt_int(mc)}張 (餘額{_fmt_int(mb)})｜融券增減 {_fmt_int(sc)}張 (餘額{_fmt_int(sb)})"
+            )
+
+    # 期貨籌碼
+    futures = market.get("futures") or []
+    if futures:
+        has_market = True
+        lines.append("")
+        lines.append("【期貨三大法人台指期淨部位（口）】")
+        for d in futures[:3]:
+            fg = d.get("foreign_net_oi", 0)
+            tr = d.get("trust_net_oi", 0)
+            dl = d.get("dealer_net_oi", 0)
+            lines.append(
+                f"  {d['date']}｜外資 {_fmt_int(fg)}｜投信 {_fmt_int(tr)}｜自營 {_fmt_int(dl)}"
+            )
+
+    # 千張大戶
+    tdcc = market.get("tdcc") or []
+    if tdcc:
+        has_market = True
+        lines.append("")
+        lines.append("【千張大戶持股比例（觀察個股）】")
+        for d in tdcc:
+            sid = d.get("stock_id", "")
+            pct = d.get("pct_1000_plus", 0)
+            cnt = d.get("holders_1000_plus", 0)
+            lines.append(f"  {sid}｜千張以上 {cnt} 人｜持股 {pct:.1f}%")
+
+    if not has_market:
+        lines.append("")
+        lines.append("【大盤籌碼】本次未取得（可能為非交易日或 API 異常）")
+
+    # ===== AI 分析 =====
     lines.append("")
     lines.append("【AI 分析】")
 
