@@ -33,6 +33,14 @@ import yfinance as yf
 # LEGEND_BROKERS = { "1470_F": ("1470","label"), ... }
 from config import LEGEND_BROKERS
 
+# 大盤籌碼模組（三大法人、期貨、融資融券、千張大戶）
+try:
+    from market_data import fetch_all_market_data
+    HAS_MARKET_DATA = True
+except ImportError:
+    HAS_MARKET_DATA = False
+    print("[WARN] market_data 模組未找到，跳過大盤籌碼抓取")
+
 TZ = ZoneInfo("Asia/Taipei")
 DEFAULT_DAYS = 5
 BASE_URL = "https://fubon-ebrokerdj.fbs.com.tw/z/zg/zgb/zgb0.djhtm"
@@ -531,6 +539,41 @@ def main():
 
     export_excel(df, fail_df, xlsx_path)
     export_pdf(df, pdf_path, summary)
+
+    # ===== 大盤籌碼資料抓取 =====
+    if HAS_MARKET_DATA and os.getenv("MARKET_DATA", "1") == "1":
+        try:
+            # 從 top_preview 取出 Top 觀察股票代碼（供千張大戶查詢）
+            top_stock_ids = []
+            seen = set()
+            for block in (summary.get("top_preview") or [])[:5]:
+                for r in (block.get("rows") or [])[:3]:
+                    sid = r.get("sid", "")
+                    if sid and sid not in seen:
+                        top_stock_ids.append(sid)
+                        seen.add(sid)
+
+            market = fetch_all_market_data(
+                top_stock_ids=top_stock_ids[:10],
+                history_days=int(os.getenv("MARKET_HISTORY_DAYS", "6")),
+            )
+            summary["market_data"] = market
+
+            if market.get("fetch_errors"):
+                summary["errors"] = (summary.get("errors") or []) + [
+                    f"[market] {e}" for e in market["fetch_errors"]
+                ]
+
+            print(f"[OK] 大盤籌碼: inst={len(market.get('institutional', []))}, "
+                  f"taiex={len(market.get('taiex', []))}, "
+                  f"margin={len(market.get('margin', []))}, "
+                  f"futures={len(market.get('futures', []))}, "
+                  f"tdcc={len(market.get('tdcc', []))}")
+        except Exception as e:
+            print(f"[WARN] 大盤籌碼抓取失敗（非致命）: {e}")
+            summary["market_data"] = {"fetch_errors": [str(e)]}
+    else:
+        print("[INFO] 大盤籌碼抓取已停用（MARKET_DATA=0 或模組不存在）")
 
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
