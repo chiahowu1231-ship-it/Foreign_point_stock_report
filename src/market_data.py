@@ -98,7 +98,15 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
     """
     抓取三大法人買賣超（TWSE BFI82U）
     date_str: 'YYYYMMDD'
-    回傳: { 'date': ..., 'foreign': { buy, sell, net }, 'trust': {...}, 'dealer': {...}, 'total_net': ... }
+
+    TWSE BFI82U 實際欄位名稱（無「合計」行時的結構）：
+      row 0: 自營商(自行買賣)
+      row 1: 自營商(避險)
+      row 2: 投信
+      row 3: 外資及陸資(不含外資自營商)
+      row 4: 外資自營商
+      row 5: 合計（= 三大法人合計）
+    有時會有「自營商合計」「外資及陸資合計」等合計行。
     """
     url = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
     data = _get_json(url, params={"response": "json", "dayDate": date_str})
@@ -113,29 +121,57 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
         "total_net": 0,
     }
 
+    # 累加器（外資和自營商各有 2 個子行需要加總）
+    foreign_buy, foreign_sell, foreign_net = 0, 0, 0
+    dealer_buy, dealer_sell, dealer_net = 0, 0, 0
+    has_foreign_total = False
+    has_dealer_total = False
+
     for row in data["data"]:
         if len(row) < 4:
             continue
         name = str(row[0]).strip()
+        b, s, n = _safe_int(row[1]), _safe_int(row[2]), _safe_int(row[3])
 
-        # 外資及陸資（合計）
-        if "外資及陸資" in name and "合計" in name:
-            result["foreign"]["buy"] = _safe_int(row[1])
-            result["foreign"]["sell"] = _safe_int(row[2])
-            result["foreign"]["net"] = _safe_int(row[3])
-        # 投信
+        # ── 外資 ──
+        # 如果有「外資及陸資合計」直接用它
+        if "外資" in name and "合計" in name:
+            result["foreign"] = {"buy": b, "sell": s, "net": n}
+            has_foreign_total = True
+        # 否則累加「外資及陸資(不含外資自營商)」+「外資自營商」
+        elif "外資" in name:
+            foreign_buy += b
+            foreign_sell += s
+            foreign_net += n
+
+        # ── 投信 ──
         elif "投信" in name:
-            result["trust"]["buy"] = _safe_int(row[1])
-            result["trust"]["sell"] = _safe_int(row[2])
-            result["trust"]["net"] = _safe_int(row[3])
-        # 自營商（合計）
+            result["trust"] = {"buy": b, "sell": s, "net": n}
+
+        # ── 自營商 ──
         elif "自營商" in name and "合計" in name:
-            result["dealer"]["buy"] = _safe_int(row[1])
-            result["dealer"]["sell"] = _safe_int(row[2])
-            result["dealer"]["net"] = _safe_int(row[3])
-        # 三大法人合計
-        elif "三大法人" in name and "合計" in name:
-            result["total_net"] = _safe_int(row[3])
+            result["dealer"] = {"buy": b, "sell": s, "net": n}
+            has_dealer_total = True
+        elif "自營商" in name:
+            dealer_buy += b
+            dealer_sell += s
+            dealer_net += n
+
+        # ── 三大法人合計（最後一行通常是「合計」）──
+        elif ("三大法人" in name) or (name == "合計"):
+            result["total_net"] = n
+
+    # 如果沒有找到合計行，用累加值
+    if not has_foreign_total and (foreign_buy or foreign_sell or foreign_net):
+        result["foreign"] = {"buy": foreign_buy, "sell": foreign_sell, "net": foreign_net}
+    if not has_dealer_total and (dealer_buy or dealer_sell or dealer_net):
+        result["dealer"] = {"buy": dealer_buy, "sell": dealer_sell, "net": dealer_net}
+
+    # 如果 total_net 仍為 0，手動加總
+    if result["total_net"] == 0:
+        result["total_net"] = (
+            result["foreign"]["net"] + result["trust"]["net"] + result["dealer"]["net"]
+        )
 
     return result
 
@@ -156,8 +192,11 @@ def fetch_institutional_history(days: int = 6) -> list:
         date_str = d.strftime("%Y%m%d")
         print(f"  [institutional] 抓取 {date_str}...")
         data = fetch_institutional_trading(date_str)
-        if data and (data["foreign"]["net"] != 0 or data["trust"]["net"] != 0):
+        if data and any(
+            data[k]["net"] != 0 for k in ("foreign", "trust", "dealer")
+        ):
             results.append(data)
+            print(f"    ✓ 外資={data['foreign']['net']:,} 投信={data['trust']['net']:,} 自營={data['dealer']['net']:,}")
         time.sleep(0.8 + random.uniform(0, 0.3))
 
     return results
@@ -316,21 +355,26 @@ def fetch_margin_history(days: int = 6) -> list:
 def fetch_futures_institutional(date_str: str) -> Optional[dict]:
     """
     抓取期交所三大法人期貨（台指期）淨部位
-    使用 TAIFEX 的 open data API
+    TAIFEX futContractsDate 表格欄位結構（13 欄）：
+      [0]  身份別
+      [1]  多方-交易口數        [2]  多方-交易契約金額(千元)
+      [3]  空方-交易口數        [4]  空方-交易契約金額(千元)
+      [5]  多空淨額-交易口數    [6]  多空淨額-交易契約金額(千元)
+      [7]  多方-未平倉口數      [8]  多方-未平倉契約金額(千元)
+      [9]  空方-未平倉口數      [10] 空方-未平倉契約金額(千元)
+      [11] 多空淨額-未平倉口數  ← 我們要這個
+      [12] 多空淨額-未平倉契約金額(千元)
     """
-    # 嘗試 TAIFEX open data
-    # URL: 三大法人-各契約-日
     url = "https://www.taifex.com.tw/cht/3/futContractsDate"
 
     try:
         from bs4 import BeautifulSoup
 
-        # 用 POST 指定日期
         form_data = {
             "queryType": "1",
             "goession": "",
             "doession": "",
-            "commodity_id": "TX",  # 台指期
+            "commodity_id": "TX",
             "queryDate": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}",
         }
 
@@ -341,47 +385,41 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
             return None
 
         soup = BeautifulSoup(r.text, "html.parser")
-        tables = soup.find_all("table")
 
         result = {
             "date": date_str,
-            "foreign_net_oi": 0,   # 外資台指期淨未平倉
-            "trust_net_oi": 0,     # 投信台指期淨未平倉
-            "dealer_net_oi": 0,    # 自營商台指期淨未平倉
+            "foreign_net_oi": 0,
+            "trust_net_oi": 0,
+            "dealer_net_oi": 0,
         }
 
-        for table in tables:
+        # 找到所有表格的 tr
+        for table in soup.find_all("table"):
             for tr in table.find_all("tr"):
                 tds = tr.find_all("td")
-                if len(tds) < 5:
+                if len(tds) < 12:
                     continue
-                name = tds[0].get_text(strip=True)
 
-                # 找「未平倉」相關欄位
+                name = tds[0].get_text(strip=True)
+                vals = [td.get_text(strip=True) for td in tds]
+
+                # 多空淨額-未平倉口數 = index 11（固定位置）
+                # 多空淨額-交易口數 = index 5（備用）
+                net_oi = _safe_int(vals[11]) if len(vals) > 11 else 0
+                net_trade = _safe_int(vals[5]) if len(vals) > 5 else 0
+
+                # 驗證：口數通常在 -500,000 ~ +500,000 之間
+                # 如果 > 1,000,000 代表可能拿到金額欄（千元），需要除以 1000 或用交易欄
+                if abs(net_oi) > 1_000_000:
+                    print(f"  [futures] ⚠ {name} net_oi={net_oi} 異常大，改用 net_trade={net_trade}")
+                    net_oi = net_trade  # fallback 到交易口數
+
                 if "外資" in name:
-                    # 買方-未平倉, 賣方-未平倉 → 淨 = 買-賣
-                    # 通常是: 多方(買), 空方(賣), 多空淨額
-                    vals = [td.get_text(strip=True) for td in tds]
-                    # 找最後一個數字欄位當淨部位
-                    for v in reversed(vals[1:]):
-                        n = _safe_int(v)
-                        if n != 0:
-                            result["foreign_net_oi"] = n
-                            break
+                    result["foreign_net_oi"] = net_oi
                 elif "投信" in name:
-                    vals = [td.get_text(strip=True) for td in tds]
-                    for v in reversed(vals[1:]):
-                        n = _safe_int(v)
-                        if n != 0:
-                            result["trust_net_oi"] = n
-                            break
-                elif "自營商" in name and "合計" not in name:
-                    vals = [td.get_text(strip=True) for td in tds]
-                    for v in reversed(vals[1:]):
-                        n = _safe_int(v)
-                        if n != 0:
-                            result["dealer_net_oi"] = n
-                            break
+                    result["trust_net_oi"] = net_oi
+                elif "自營商" in name:
+                    result["dealer_net_oi"] = net_oi
 
         if any(v != 0 for k, v in result.items() if k != "date"):
             return result
@@ -390,31 +428,6 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
         print("  [futures] BeautifulSoup not available")
     except Exception as e:
         print(f"  [futures] 解析失敗: {e}")
-
-    # Fallback: 嘗試另一個 API（大額交易人）
-    try:
-        url2 = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
-        form2 = {
-            "contractId": "TX",
-            "queryDate": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}",
-        }
-        r2 = requests.post(url2, data=form2, headers=HEADERS, timeout=15)
-        r2.encoding = "utf-8"
-
-        if r2.status_code == 200:
-            soup2 = BeautifulSoup(r2.text, "html.parser")
-            # 大額交易人通常有 Top 5 / Top 10 持倉比
-            tables2 = soup2.find_all("table")
-            for table in tables2:
-                for tr in table.find_all("tr"):
-                    tds = tr.find_all("td")
-                    text = " ".join(td.get_text(strip=True) for td in tds)
-                    if "前五大" in text or "前十大" in text:
-                        result = result or {"date": date_str}
-                        result["large_trader_info"] = text[:200]
-                        return result
-    except Exception as e2:
-        print(f"  [futures/large_trader] fallback 也失敗: {e2}")
 
     return None
 
