@@ -2,7 +2,7 @@
 # Gemini analysis runner v8 — model fallback + prompt compression
 # ----------------------------------------------------------------
 # 修正重點：
-#   1. 預設模型改為 gemini-2.0-flash（免費額度是 2.5-pro 的 30 倍以上）
+#   1. 預設模型改為 gemini-2.5-flash（2.0 系列已於 3/3 退役）
 #   2. 429 Quota Exceeded 時自動 fallback 到下一個模型（不再無效重試）
 #   3. Prompt 精簡：只送 Top 5 外資 × Top 5 檔（減少 60% token 消耗）
 #   4. Fixup pass 改為可選（節省 API 呼叫次數）
@@ -27,15 +27,15 @@ except ImportError:
     HAS_MARKET_FORMAT = False
 
 # ── 模型設定 ──────────────────────────────────────
-# 預設使用 gemini-2.0-flash（免費額度高、速度快、品質足夠）
-# 可用 GEMINI_MODEL env 覆蓋為 gemini-2.5-pro（需付費帳戶）
-PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# ⚠️ gemini-2.0-flash / 1.5-flash / 2.0-flash-lite 已於 2026/3/3 退役！
+# 目前免費可用：gemini-2.5-flash / 2.5-flash-lite / 2.5-pro
+PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-# 429 時的 Fallback 順序（從快到慢、從便宜到貴）
+# 429 時的 Fallback 順序
 FALLBACK_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",       # 10 RPM / 250 RPD（免費）
+    "gemini-2.5-flash-lite",  # 15 RPM / 1000 RPD（免費，額度最高）
+    "gemini-2.5-pro",         # 5 RPM / 100 RPD（免費，最強但限額低）
 ]
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -59,7 +59,7 @@ ENABLE_FIXUP = os.getenv("GEMINI_ENABLE_FIXUP", "1").strip() != "0"
 PROMPT_TOP_BROKERS = int(os.getenv("PROMPT_TOP_BROKERS", "5"))  # 送幾家外資
 PROMPT_TOP_STOCKS = int(os.getenv("PROMPT_TOP_STOCKS", "5"))    # 每家送幾檔
 
-ANALYZER_VERSION = "v9-market-context-fallback"
+ANALYZER_VERSION = "v10-gemini25-market-context"
 
 
 # ── 檔案讀寫 ──────────────────────────────────────
@@ -432,8 +432,8 @@ def main():
             print("=" * 60)
             print("【429 Quota Exceeded 除錯指南】")
             print("1. 檢查 Google AI Studio 帳戶配額：https://aistudio.google.com/")
-            print("2. 免費帳戶的 gemini-2.5-pro 每日限額極低（~50次/天）")
-            print("3. 建議使用 gemini-2.0-flash（免費限額 1500 RPM）")
+            print("2. 免費帳戶的 gemini-2.5-pro 每日限額 100 RPD")
+            print("3. 建議使用 gemini-2.5-flash（免費 10 RPM / 250 RPD）")
             print("4. 或啟用 Google Cloud Billing 解除限制")
             print("5. 確認 GEMINI_API_KEY 對應的 Project 有正確啟用 API")
             print("=" * 60)
