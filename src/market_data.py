@@ -1,0 +1,742 @@
+# src/market_data.py
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  大盤籌碼資料抓取模組
+#  - 三大法人買賣超（外資、投信、自營商）
+#  - 大盤指數 + 成交量（近 6 天含當日）
+#  - 融資融券變化（全市場）
+#  - 期貨籌碼（三大法人台指期 + 大額交易人）
+#  - 千張大戶持股比例（針對 top 觀察清單個股）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+import os
+import re
+import json
+import time
+import random
+import requests
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from typing import Optional
+
+TZ = ZoneInfo("Asia/Taipei")
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/json, text/html, */*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+
+def _safe_int(s) -> int:
+    """安全轉 int：處理逗號、空值、--"""
+    if s is None:
+        return 0
+    s = str(s).strip().replace(",", "").replace(" ", "")
+    if s in ("", "--", "-", "N/A"):
+        return 0
+    try:
+        return int(s)
+    except ValueError:
+        m = re.search(r"-?[\d]+", s)
+        return int(m.group()) if m else 0
+
+
+def _safe_float(s) -> float:
+    if s is None:
+        return 0.0
+    s = str(s).strip().replace(",", "").replace(" ", "")
+    if s in ("", "--", "-", "N/A"):
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        m = re.search(r"-?[\d.]+", s)
+        return float(m.group()) if m else 0.0
+
+
+def _get_json(url: str, params: dict = None, retries: int = 3, timeout: int = 15) -> Optional[dict]:
+    """帶重試的 JSON GET"""
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("stat") == "OK" or "data" in data or isinstance(data, list):
+                    return data
+            print(f"  [market_data] {url} HTTP {r.status_code}")
+        except Exception as e:
+            print(f"  [market_data] {url} attempt {attempt+1} failed: {e}")
+        time.sleep(1.0 + random.uniform(0, 0.5))
+    return None
+
+
+def _get_html(url: str, params: dict = None, retries: int = 3, timeout: int = 15) -> Optional[str]:
+    """帶重試的 HTML GET"""
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r.encoding = "utf-8"
+            if r.status_code == 200 and r.text:
+                return r.text
+        except Exception as e:
+            print(f"  [market_data] HTML {url} attempt {attempt+1}: {e}")
+        time.sleep(1.0 + random.uniform(0, 0.5))
+    return None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  1. 三大法人買賣超
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_institutional_trading(date_str: str) -> Optional[dict]:
+    """
+    抓取三大法人買賣超（TWSE BFI82U）
+    date_str: 'YYYYMMDD'
+    回傳: { 'date': ..., 'foreign': { buy, sell, net }, 'trust': {...}, 'dealer': {...}, 'total_net': ... }
+    """
+    url = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+    data = _get_json(url, params={"response": "json", "dayDate": date_str})
+    if not data or not data.get("data"):
+        return None
+
+    result = {
+        "date": date_str,
+        "foreign": {"buy": 0, "sell": 0, "net": 0},
+        "trust": {"buy": 0, "sell": 0, "net": 0},
+        "dealer": {"buy": 0, "sell": 0, "net": 0},
+        "total_net": 0,
+    }
+
+    for row in data["data"]:
+        if len(row) < 4:
+            continue
+        name = str(row[0]).strip()
+
+        # 外資及陸資（合計）
+        if "外資及陸資" in name and "合計" in name:
+            result["foreign"]["buy"] = _safe_int(row[1])
+            result["foreign"]["sell"] = _safe_int(row[2])
+            result["foreign"]["net"] = _safe_int(row[3])
+        # 投信
+        elif "投信" in name:
+            result["trust"]["buy"] = _safe_int(row[1])
+            result["trust"]["sell"] = _safe_int(row[2])
+            result["trust"]["net"] = _safe_int(row[3])
+        # 自營商（合計）
+        elif "自營商" in name and "合計" in name:
+            result["dealer"]["buy"] = _safe_int(row[1])
+            result["dealer"]["sell"] = _safe_int(row[2])
+            result["dealer"]["net"] = _safe_int(row[3])
+        # 三大法人合計
+        elif "三大法人" in name and "合計" in name:
+            result["total_net"] = _safe_int(row[3])
+
+    return result
+
+
+def fetch_institutional_history(days: int = 6) -> list:
+    """抓取近 N 天的三大法人買賣超"""
+    results = []
+    today = datetime.now(TZ)
+
+    # 往前多抓幾天（跳過假日）
+    checked = 0
+    for delta in range(days * 2 + 5):
+        if len(results) >= days:
+            break
+        d = today - timedelta(days=delta)
+        if d.weekday() >= 5:  # 跳過六日
+            continue
+        date_str = d.strftime("%Y%m%d")
+        print(f"  [institutional] 抓取 {date_str}...")
+        data = fetch_institutional_trading(date_str)
+        if data and (data["foreign"]["net"] != 0 or data["trust"]["net"] != 0):
+            results.append(data)
+        time.sleep(0.8 + random.uniform(0, 0.3))
+
+    return results
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  2. 大盤指數 + 成交量（近 N 天）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_taiex_daily(days: int = 6) -> list:
+    """
+    抓取加權指數日成交量（TWSE FMTQIK 每月成交資訊）
+    回傳: [{ 'date': ..., 'volume_billion': ..., 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'change': ... }, ...]
+    """
+    today = datetime.now(TZ)
+    results = []
+
+    # 抓當月 + 上月（確保跨月也有資料）
+    for month_offset in [0, 1]:
+        target = today.replace(day=1) - timedelta(days=month_offset * 28)
+        ym = target.strftime("%Y%m01")
+
+        url = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
+        data = _get_json(url, params={"response": "json", "date": ym})
+        if not data or not data.get("data"):
+            continue
+
+        for row in data["data"]:
+            if len(row) < 7:
+                continue
+            # row: [日期, 成交股數, 成交金額, 成交筆數, 發行量加權股價指數, 漲跌點數]
+            # 或: [日期, 成交股數, 成交金額, 開盤, 最高, 最低, 收盤]
+            date_str = str(row[0]).strip().replace("/", "")
+            # 民國年轉西元
+            try:
+                parts = str(row[0]).strip().split("/")
+                if len(parts) == 3:
+                    y = int(parts[0]) + 1911
+                    m = int(parts[1])
+                    d = int(parts[2])
+                    date_str = f"{y}{m:02d}{d:02d}"
+            except Exception:
+                pass
+
+            volume_raw = _safe_int(row[1])  # 成交股數
+            volume_billion = round(volume_raw / 1e8, 1)  # 億股 → 億元概念
+
+            # 金額（元）→ 億元
+            amount_raw = _safe_int(row[2])
+            amount_billion = round(amount_raw / 1e8, 0)
+
+            entry = {
+                "date": date_str,
+                "volume_shares": volume_raw,
+                "amount_billion": amount_billion,  # 成交金額（億元）
+            }
+
+            # 嘗試取指數欄位（不同日期格式可能不同）
+            if len(row) >= 5:
+                entry["close"] = _safe_float(row[4])  # 指數
+            if len(row) >= 6:
+                entry["change"] = _safe_float(row[5])  # 漲跌
+
+            results.append(entry)
+        time.sleep(0.5)
+
+    # 排序 + 取最近 N 天
+    results.sort(key=lambda x: x["date"], reverse=True)
+    return results[:days]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  3. 融資融券變化（全市場）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_margin_trading(date_str: str) -> Optional[dict]:
+    """
+    抓取融資融券（TWSE MI_MARGN, selectType=MS 為整體市場）
+    回傳: { 'date':..., 'margin_buy':..., 'margin_sell':..., 'margin_balance':...,
+            'short_sell':..., 'short_cover':..., 'short_balance':..., 'margin_change':..., 'short_change':... }
+    """
+    url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+    data = _get_json(url, params={
+        "response": "json",
+        "date": date_str,
+        "selectType": "MS",
+    })
+    if not data:
+        return None
+
+    # MI_MARGN 的 creditList 或 data
+    rows = data.get("creditList") or data.get("data") or []
+    if not rows:
+        return None
+
+    result = {
+        "date": date_str,
+        "margin_buy": 0,       # 融資買進
+        "margin_sell": 0,      # 融資賣出
+        "margin_balance": 0,   # 融資餘額
+        "margin_change": 0,    # 融資增減
+        "short_sell": 0,       # 融券賣出
+        "short_cover": 0,      # 融券回補
+        "short_balance": 0,    # 融券餘額
+        "short_change": 0,     # 融券增減
+    }
+
+    # 通常最後一行是合計
+    for row in rows:
+        if len(row) < 8:
+            continue
+        name = str(row[0]).strip() if isinstance(row[0], str) else ""
+        if "合計" in name or name == "" or len(rows) == 1:
+            # 不同版本的欄位順序可能不同，嘗試解析
+            # 典型: [名稱, 融資買進, 融資賣出, 融資現償, 融資餘額(前), 融資餘額(今), 融資增減, ...]
+            result["margin_buy"] = _safe_int(row[1]) if len(row) > 1 else 0
+            result["margin_sell"] = _safe_int(row[2]) if len(row) > 2 else 0
+            if len(row) > 6:
+                result["margin_balance"] = _safe_int(row[5])
+                result["margin_change"] = _safe_int(row[6])
+            # 融券部分（通常在後半段欄位）
+            if len(row) > 12:
+                result["short_sell"] = _safe_int(row[7])
+                result["short_cover"] = _safe_int(row[8])
+                result["short_balance"] = _safe_int(row[11])
+                result["short_change"] = _safe_int(row[12])
+
+    return result
+
+
+def fetch_margin_history(days: int = 6) -> list:
+    """抓取近 N 天的融資融券資料"""
+    results = []
+    today = datetime.now(TZ)
+
+    for delta in range(days * 2 + 5):
+        if len(results) >= days:
+            break
+        d = today - timedelta(days=delta)
+        if d.weekday() >= 5:
+            continue
+        date_str = d.strftime("%Y%m%d")
+        print(f"  [margin] 抓取 {date_str}...")
+        data = fetch_margin_trading(date_str)
+        if data and data["margin_balance"] != 0:
+            results.append(data)
+        time.sleep(0.8 + random.uniform(0, 0.3))
+
+    return results
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  4. 期貨籌碼（三大法人台指期淨部位 + 大額交易人）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_futures_institutional(date_str: str) -> Optional[dict]:
+    """
+    抓取期交所三大法人期貨（台指期）淨部位
+    使用 TAIFEX 的 open data API
+    """
+    # 嘗試 TAIFEX open data
+    # URL: 三大法人-各契約-日
+    url = "https://www.taifex.com.tw/cht/3/futContractsDate"
+
+    try:
+        from bs4 import BeautifulSoup
+
+        # 用 POST 指定日期
+        form_data = {
+            "queryType": "1",
+            "goession": "",
+            "doession": "",
+            "commodity_id": "TX",  # 台指期
+            "queryDate": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}",
+        }
+
+        r = requests.post(url, data=form_data, headers=HEADERS, timeout=15)
+        r.encoding = "utf-8"
+
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        tables = soup.find_all("table")
+
+        result = {
+            "date": date_str,
+            "foreign_net_oi": 0,   # 外資台指期淨未平倉
+            "trust_net_oi": 0,     # 投信台指期淨未平倉
+            "dealer_net_oi": 0,    # 自營商台指期淨未平倉
+        }
+
+        for table in tables:
+            for tr in table.find_all("tr"):
+                tds = tr.find_all("td")
+                if len(tds) < 5:
+                    continue
+                name = tds[0].get_text(strip=True)
+
+                # 找「未平倉」相關欄位
+                if "外資" in name:
+                    # 買方-未平倉, 賣方-未平倉 → 淨 = 買-賣
+                    # 通常是: 多方(買), 空方(賣), 多空淨額
+                    vals = [td.get_text(strip=True) for td in tds]
+                    # 找最後一個數字欄位當淨部位
+                    for v in reversed(vals[1:]):
+                        n = _safe_int(v)
+                        if n != 0:
+                            result["foreign_net_oi"] = n
+                            break
+                elif "投信" in name:
+                    vals = [td.get_text(strip=True) for td in tds]
+                    for v in reversed(vals[1:]):
+                        n = _safe_int(v)
+                        if n != 0:
+                            result["trust_net_oi"] = n
+                            break
+                elif "自營商" in name and "合計" not in name:
+                    vals = [td.get_text(strip=True) for td in tds]
+                    for v in reversed(vals[1:]):
+                        n = _safe_int(v)
+                        if n != 0:
+                            result["dealer_net_oi"] = n
+                            break
+
+        if any(v != 0 for k, v in result.items() if k != "date"):
+            return result
+
+    except ImportError:
+        print("  [futures] BeautifulSoup not available")
+    except Exception as e:
+        print(f"  [futures] 解析失敗: {e}")
+
+    # Fallback: 嘗試另一個 API（大額交易人）
+    try:
+        url2 = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
+        form2 = {
+            "contractId": "TX",
+            "queryDate": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}",
+        }
+        r2 = requests.post(url2, data=form2, headers=HEADERS, timeout=15)
+        r2.encoding = "utf-8"
+
+        if r2.status_code == 200:
+            soup2 = BeautifulSoup(r2.text, "html.parser")
+            # 大額交易人通常有 Top 5 / Top 10 持倉比
+            tables2 = soup2.find_all("table")
+            for table in tables2:
+                for tr in table.find_all("tr"):
+                    tds = tr.find_all("td")
+                    text = " ".join(td.get_text(strip=True) for td in tds)
+                    if "前五大" in text or "前十大" in text:
+                        result = result or {"date": date_str}
+                        result["large_trader_info"] = text[:200]
+                        return result
+    except Exception as e2:
+        print(f"  [futures/large_trader] fallback 也失敗: {e2}")
+
+    return None
+
+
+def fetch_futures_history(days: int = 6) -> list:
+    """抓取近 N 天的期貨三大法人"""
+    results = []
+    today = datetime.now(TZ)
+
+    for delta in range(days * 2 + 5):
+        if len(results) >= days:
+            break
+        d = today - timedelta(days=delta)
+        if d.weekday() >= 5:
+            continue
+        date_str = d.strftime("%Y%m%d")
+        print(f"  [futures] 抓取 {date_str}...")
+        data = fetch_futures_institutional(date_str)
+        if data:
+            results.append(data)
+        time.sleep(1.0 + random.uniform(0, 0.5))
+
+    return results
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  5. 千張大戶持股比例（TDCC 集保中心，針對個股）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_tdcc_holders(stock_id: str) -> Optional[dict]:
+    """
+    查詢集保中心個股持股分級（千張以上大戶比例）
+    使用 TDCC 公開查詢 API
+    """
+    try:
+        url = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
+        # TDCC 使用 POST + form data
+        form_data = {
+            "REQ_OPR": "SELECT",
+            "clession": "",
+            "SqlMethod": "StockNo",
+            "StockNo": stock_id,
+            "scaDates": "",   # 空=最新
+            "scaDate": "",
+            "clession1": "",
+            "Session2": "",
+        }
+
+        r = requests.post(url, data=form_data, headers={
+            **HEADERS,
+            "Referer": "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock",
+        }, timeout=15)
+        r.encoding = "utf-8"
+
+        if r.status_code != 200:
+            return None
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        result = {
+            "stock_id": stock_id,
+            "total_holders": 0,
+            "holders_1000_plus": 0,       # 千張以上人數
+            "pct_1000_plus": 0.0,         # 千張以上持股比例
+            "holders_400_999": 0,         # 400-999 張
+            "pct_400_999": 0.0,
+        }
+
+        tables = soup.find_all("table")
+        for table in tables:
+            for tr in table.find_all("tr"):
+                tds = tr.find_all("td")
+                if len(tds) < 5:
+                    continue
+                level = tds[0].get_text(strip=True)
+
+                # 找「1,000張以上」的行
+                if "1,000" in level or "1000" in level:
+                    result["holders_1000_plus"] = _safe_int(tds[1].get_text(strip=True))
+                    # 比例通常在最後一欄
+                    pct_text = tds[-1].get_text(strip=True).replace("%", "")
+                    result["pct_1000_plus"] = _safe_float(pct_text)
+
+                elif ("400" in level and "999" in level) or "400" in level:
+                    result["holders_400_999"] = _safe_int(tds[1].get_text(strip=True))
+                    pct_text = tds[-1].get_text(strip=True).replace("%", "")
+                    result["pct_400_999"] = _safe_float(pct_text)
+
+                elif "合計" in level:
+                    result["total_holders"] = _safe_int(tds[1].get_text(strip=True))
+
+        if result["pct_1000_plus"] > 0:
+            return result
+
+    except Exception as e:
+        print(f"  [tdcc] {stock_id} 查詢失敗: {e}")
+
+    return None
+
+
+def fetch_tdcc_for_stocks(stock_ids: list, max_stocks: int = 10) -> list:
+    """批次查詢千張大戶（限制查詢數避免被封）"""
+    results = []
+    for sid in stock_ids[:max_stocks]:
+        print(f"  [tdcc] 查詢 {sid} 千張大戶...")
+        data = fetch_tdcc_holders(sid)
+        if data:
+            results.append(data)
+        time.sleep(1.5 + random.uniform(0, 0.5))
+    return results
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  主函式：一次抓完所有大盤資料
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def fetch_all_market_data(top_stock_ids: list = None, history_days: int = 6) -> dict:
+    """
+    一次抓完所有大盤籌碼資料，回傳結構化 dict 嵌入 summary.json
+
+    Args:
+        top_stock_ids: 需要查千張大戶的股票代碼 list（前 N 檔）
+        history_days: 歷史天數（含當天，預設 6 = 當天+前5天）
+
+    Returns:
+        {
+            "institutional": [...],   # 三大法人近 N 天
+            "taiex": [...],           # 大盤指數+量近 N 天
+            "margin": [...],          # 融資融券近 N 天
+            "futures": [...],         # 期貨三大法人近 N 天
+            "tdcc": [...],            # 千張大戶（個股）
+            "fetch_errors": [...]     # 抓取失敗記錄
+        }
+    """
+    print("=" * 50)
+    print("[market_data] 開始抓取大盤籌碼資料")
+    print(f"  history_days={history_days}, top_stocks={len(top_stock_ids or [])}")
+    print("=" * 50)
+
+    result = {
+        "institutional": [],
+        "taiex": [],
+        "margin": [],
+        "futures": [],
+        "tdcc": [],
+        "fetch_errors": [],
+    }
+
+    # 1. 三大法人
+    try:
+        print("\n[1/5] 三大法人買賣超...")
+        result["institutional"] = fetch_institutional_history(history_days)
+        print(f"  ✓ 取得 {len(result['institutional'])} 天")
+    except Exception as e:
+        err = f"三大法人抓取失敗: {e}"
+        print(f"  ✗ {err}")
+        result["fetch_errors"].append(err)
+
+    # 2. 大盤指數 + 成交量
+    try:
+        print("\n[2/5] 大盤指數 + 成交量...")
+        result["taiex"] = fetch_taiex_daily(history_days)
+        print(f"  ✓ 取得 {len(result['taiex'])} 天")
+    except Exception as e:
+        err = f"大盤指數抓取失敗: {e}"
+        print(f"  ✗ {err}")
+        result["fetch_errors"].append(err)
+
+    # 3. 融資融券
+    try:
+        print("\n[3/5] 融資融券...")
+        result["margin"] = fetch_margin_history(history_days)
+        print(f"  ✓ 取得 {len(result['margin'])} 天")
+    except Exception as e:
+        err = f"融資融券抓取失敗: {e}"
+        print(f"  ✗ {err}")
+        result["fetch_errors"].append(err)
+
+    # 4. 期貨三大法人
+    try:
+        print("\n[4/5] 期貨籌碼（三大法人台指期）...")
+        result["futures"] = fetch_futures_history(history_days)
+        print(f"  ✓ 取得 {len(result['futures'])} 天")
+    except Exception as e:
+        err = f"期貨籌碼抓取失敗: {e}"
+        print(f"  ✗ {err}")
+        result["fetch_errors"].append(err)
+
+    # 5. 千張大戶（個股）
+    if top_stock_ids:
+        try:
+            print(f"\n[5/5] 千張大戶持股（{len(top_stock_ids[:10])} 檔）...")
+            result["tdcc"] = fetch_tdcc_for_stocks(top_stock_ids, max_stocks=10)
+            print(f"  ✓ 取得 {len(result['tdcc'])} 檔")
+        except Exception as e:
+            err = f"千張大戶抓取失敗: {e}"
+            print(f"  ✗ {err}")
+            result["fetch_errors"].append(err)
+    else:
+        print("\n[5/5] 千張大戶：無 top_stock_ids，跳過")
+
+    total_errors = len(result["fetch_errors"])
+    print(f"\n[market_data] 完成，錯誤 {total_errors} 筆")
+    return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  格式化（供 prompt 使用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _fmt(n: int) -> str:
+    """格式化數字（帶千分位, 億元單位轉換）"""
+    if abs(n) >= 1e8:
+        return f"{n/1e8:.1f}億"
+    elif abs(n) >= 1e4:
+        return f"{n/1e4:.1f}萬"
+    return f"{n:,}"
+
+
+def format_market_context_for_prompt(market_data: dict) -> str:
+    """
+    將 market_data 格式化成文字，塞進 AI prompt
+    """
+    lines = []
+
+    # ── 三大法人 ──
+    inst = market_data.get("institutional") or []
+    if inst:
+        lines.append("【三大法人買賣超（近日，元）】")
+        for d in inst[:6]:
+            date = d["date"]
+            fg = d["foreign"]["net"]
+            tr = d["trust"]["net"]
+            dl = d["dealer"]["net"]
+            total = d["total_net"]
+            lines.append(
+                f"  {date}｜外資 {_fmt(fg)}｜投信 {_fmt(tr)}｜自營 {_fmt(dl)}｜合計 {_fmt(total)}"
+            )
+        lines.append("")
+
+    # ── 大盤指數 + 成交量 ──
+    taiex = market_data.get("taiex") or []
+    if taiex:
+        lines.append("【大盤指數＋成交金額（近日）】")
+        for d in taiex[:6]:
+            date = d["date"]
+            amt = d.get("amount_billion", 0)
+            close = d.get("close", 0)
+            chg = d.get("change", 0)
+            sign = "+" if chg > 0 else ""
+            lines.append(
+                f"  {date}｜收盤 {close}｜漲跌 {sign}{chg}｜成交金額 {amt:.0f}億"
+            )
+
+        # 量能比較
+        if len(taiex) >= 2:
+            today_amt = taiex[0].get("amount_billion", 0)
+            avg5 = sum(d.get("amount_billion", 0) for d in taiex[1:6]) / max(len(taiex[1:6]), 1)
+            if avg5 > 0:
+                ratio = today_amt / avg5
+                if ratio > 1.2:
+                    lines.append(f"  ★ 今日量能 {today_amt:.0f}億，為前5日均量 {avg5:.0f}億 的 {ratio:.1f}倍（放量）")
+                elif ratio < 0.8:
+                    lines.append(f"  ★ 今日量能 {today_amt:.0f}億，為前5日均量 {avg5:.0f}億 的 {ratio:.1f}倍（縮量）")
+                else:
+                    lines.append(f"  ★ 今日量能 {today_amt:.0f}億，與前5日均量 {avg5:.0f}億 持平")
+        lines.append("")
+
+    # ── 融資融券 ──
+    margin = market_data.get("margin") or []
+    if margin:
+        lines.append("【融資融券變化（近日，張）】")
+        for d in margin[:6]:
+            date = d["date"]
+            mc = d.get("margin_change", 0)
+            mb = d.get("margin_balance", 0)
+            sc = d.get("short_change", 0)
+            sb = d.get("short_balance", 0)
+            lines.append(
+                f"  {date}｜融資增減 {_fmt(mc)}｜融資餘額 {_fmt(mb)}｜融券增減 {_fmt(sc)}｜融券餘額 {_fmt(sb)}"
+            )
+        lines.append("")
+
+    # ── 期貨籌碼 ──
+    futures = market_data.get("futures") or []
+    if futures:
+        lines.append("【期貨三大法人台指期淨部位（近日，口）】")
+        for d in futures[:6]:
+            date = d["date"]
+            fg = d.get("foreign_net_oi", 0)
+            tr = d.get("trust_net_oi", 0)
+            dl = d.get("dealer_net_oi", 0)
+            lines.append(
+                f"  {date}｜外資 {_fmt(fg)}｜投信 {_fmt(tr)}｜自營 {_fmt(dl)}"
+            )
+        lines.append("")
+
+    # ── 千張大戶 ──
+    tdcc = market_data.get("tdcc") or []
+    if tdcc:
+        lines.append("【千張大戶持股比例（觀察清單個股）】")
+        for d in tdcc:
+            sid = d["stock_id"]
+            pct = d.get("pct_1000_plus", 0)
+            cnt = d.get("holders_1000_plus", 0)
+            lines.append(f"  {sid}｜千張以上: {cnt}人, 持股 {pct:.1f}%")
+        lines.append("")
+
+    if not lines:
+        lines.append("【大盤籌碼資料】本次未能取得（可能為非交易日或 API 異常）")
+
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    """獨立測試用"""
+    data = fetch_all_market_data(
+        top_stock_ids=["2330", "2344", "2303"],
+        history_days=6,
+    )
+    print("\n" + "=" * 50)
+    print(format_market_context_for_prompt(data))
+    print("=" * 50)
+    print(json.dumps(data, ensure_ascii=False, indent=2)[:2000])
