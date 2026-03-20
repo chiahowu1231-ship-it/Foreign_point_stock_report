@@ -322,9 +322,18 @@ def build_html(summary: dict) -> str:
 
     p.append('</div>')
 
-    # Footer
+    # Disclaimer + Footer
     p.append(
-        '<div style="padding:12px 24px;background:#F5F5F5;border-radius:0 0 8px 8px;'
+        '<div style="padding:14px 24px;background:#FFF9E6;border-top:1px solid #F0E0A0;'
+        'font-size:11px;color:#8B7500;line-height:1.6;">'
+        '<b>[免責聲明]</b> '
+        '帶進帶出是違法的行為，此資料皆為網上根據盤後資訊大數據所取得訊息，'
+        '非作為或被視為買進或售出標的的邀請或意象，'
+        '請自行依據取得資訊評估風險與獲利，賺有賠請斟酌。'
+        '</div>'
+    )
+    p.append(
+        '<div style="padding:10px 24px;background:#F5F5F5;border-radius:0 0 8px 8px;'
         'font-size:11px;color:#999;text-align:center;">'
         '此信由 GitHub Actions 自動寄出</div>'
     )
@@ -353,6 +362,9 @@ def build_plain(summary: dict) -> str:
     if ai_text:
         lines.append("【AI 分析】")
         lines.append(ai_text[:3000])
+    lines.append("")
+    lines.append("[免責聲明] 帶進帶出是違法的行為，此資料皆為網上根據盤後資訊大數據所取得訊息，"
+                 "非作為或被視為買進或售出標的的邀請或意象，請自行依據取得資訊評估風險與獲利，有賺有賠請斟酌。")
     lines.append("")
     lines.append("（此信由 GitHub Actions 自動寄出）")
     return "\n".join(lines)
