@@ -61,13 +61,17 @@ def _safe_float(s) -> float:
 
 
 def _get_json(url: str, params: dict = None, retries: int = 3, timeout: int = 15) -> Optional[dict]:
-    """帶重試的 JSON GET"""
+    """帶重試的 JSON GET（對 TWSE 回傳格式寬容）"""
     for attempt in range(retries):
         try:
             r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
             if r.status_code == 200:
                 data = r.json()
-                if data.get("stat") == "OK" or "data" in data or isinstance(data, list):
+                # TWSE 回傳可能是 {"stat":"OK","data":[...]} 或直接 {"data":[...]} 或 [...]
+                if isinstance(data, list):
+                    return {"data": data}
+                if isinstance(data, dict):
+                    # 有任何 key 包含 data/list/array 就回傳
                     return data
             print(f"  [market_data] {url} HTTP {r.status_code}")
         except Exception as e:
@@ -108,7 +112,7 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
       row 5: 合計（= 三大法人合計）
     有時會有「自營商合計」「外資及陸資合計」等合計行。
     """
-    url = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+    url = "https://www.twse.com.tw/exchangeReport/BFI82U"
     data = _get_json(url, params={"response": "json", "dayDate": date_str})
     if not data or not data.get("data"):
         return None
@@ -206,65 +210,103 @@ def fetch_institutional_history(days: int = 6) -> list:
 #  2. 大盤指數 + 成交量（近 N 天）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _roc_date(s: str) -> str:
+    """民國年 115/03/19 → 西元 20260319"""
+    parts = str(s).strip().split("/")
+    if len(parts) == 3:
+        y = int(parts[0]) + 1911
+        return f"{y}{int(parts[1]):02d}{int(parts[2]):02d}"
+    return str(s).replace("/", "")
+
+
 def fetch_taiex_daily(days: int = 6) -> list:
     """
-    抓取加權指數日成交量（TWSE FMTQIK 每月成交資訊）
-    回傳: [{ 'date': ..., 'volume_billion': ..., 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'change': ... }, ...]
+    抓取加權指數 + 每日成交量
+    來源 1（主要）: 舊版 API exchangeReport/FMTQIK（社群驗證穩定）
+      回傳: { "stat":"OK", "data":[ ["115/03/19","8,413,...","381,069,...","3,123,...","22,345.67","-123.45"], ... ] }
+      欄位: [日期(民國), 成交股數, 成交金額(元), 成交筆數, 加權指數, 漲跌點數]
+    來源 2（備援）: Open Data API openapi.twse.com.tw/v1/exchangeReport/FMTQIK
+      回傳: JSON array [ {"Date":"115/03/19","TradeVolume":"8413906547",...}, ... ]
     """
     today = datetime.now(TZ)
-    results = []
+    results_map = {}
 
-    # 抓當月 + 上月（確保跨月也有資料）
+    # ── 來源 1：舊版 API（非 rwd，更穩定） ──
     for month_offset in [0, 1]:
         target = today.replace(day=1) - timedelta(days=month_offset * 28)
         ym = target.strftime("%Y%m01")
+        print(f"  [taiex] 舊版API date={ym}")
 
-        url = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
+        url = "https://www.twse.com.tw/exchangeReport/FMTQIK"
         data = _get_json(url, params={"response": "json", "date": ym})
-        if not data or not data.get("data"):
+        if not data:
+            print(f"  [taiex] 舊版API 無回應")
             continue
 
-        for row in data["data"]:
-            if len(row) < 7:
+        rows = data.get("data") or []
+        stat = data.get("stat", "?")
+        print(f"  [taiex] 舊版API stat={stat}, rows={len(rows)}")
+        if rows:
+            print(f"  [taiex] 第一行範例({len(rows[0])}欄): {rows[0]}")
+
+        for row in rows:
+            if len(row) < 3:
                 continue
-            # row: [日期, 成交股數, 成交金額, 成交筆數, 發行量加權股價指數, 漲跌點數]
-            # 或: [日期, 成交股數, 成交金額, 開盤, 最高, 最低, 收盤]
-            date_str = str(row[0]).strip().replace("/", "")
-            # 民國年轉西元
-            try:
-                parts = str(row[0]).strip().split("/")
-                if len(parts) == 3:
-                    y = int(parts[0]) + 1911
-                    m = int(parts[1])
-                    d = int(parts[2])
-                    date_str = f"{y}{m:02d}{d:02d}"
-            except Exception:
-                pass
-
-            volume_raw = _safe_int(row[1])  # 成交股數
-            volume_billion = round(volume_raw / 1e8, 1)  # 億股 → 億元概念
-
-            # 金額（元）→ 億元
+            date_str = _roc_date(row[0])
             amount_raw = _safe_int(row[2])
-            amount_billion = round(amount_raw / 1e8, 0)
-
             entry = {
                 "date": date_str,
-                "volume_shares": volume_raw,
-                "amount_billion": amount_billion,  # 成交金額（億元）
+                "volume_shares": _safe_int(row[1]),
+                "amount_billion": round(amount_raw / 1e8, 0),
             }
+            if len(row) >= 5 and row[4]:
+                entry["close"] = _safe_float(row[4])
+            if len(row) >= 6 and row[5]:
+                entry["change"] = _safe_float(row[5])
+            results_map[date_str] = entry
+        time.sleep(0.8)
 
-            # 嘗試取指數欄位（不同日期格式可能不同）
-            if len(row) >= 5:
-                entry["close"] = _safe_float(row[4])  # 指數
-            if len(row) >= 6:
-                entry["change"] = _safe_float(row[5])  # 漲跌
+    # ── 來源 2：Open Data API（若來源 1 失敗） ──
+    if not results_map:
+        print(f"  [taiex] 舊版API 無資料，嘗試 Open Data API...")
+        url2 = "https://openapi.twse.com.tw/v1/exchangeReport/FMTQIK"
+        data2 = _get_json(url2)
+        if data2:
+            rows2 = data2.get("data") if isinstance(data2, dict) else data2 if isinstance(data2, list) else []
+            # 如果 _get_json 已經包裝了 list → {"data": [...]}
+            if isinstance(data2, dict) and "data" not in data2:
+                # Open Data 可能直接返回 list，被 _get_json 包裝成 {"data": [...]}
+                rows2 = list(data2.values())[0] if data2 else []
+            print(f"  [taiex] OpenData rows={len(rows2)}")
 
-            results.append(entry)
-        time.sleep(0.5)
+            for item in rows2:
+                if isinstance(item, dict):
+                    date_str = _roc_date(item.get("Date", item.get("日期", "")))
+                    amt = _safe_int(item.get("TradeValue", item.get("成交金額", "0")))
+                    vol = _safe_int(item.get("TradeVolume", item.get("成交股數", "0")))
+                    close = _safe_float(item.get("TAIEX", item.get("發行量加權股價指數", "0")))
+                    change = _safe_float(item.get("Change", item.get("漲跌點數", "0")))
+                    results_map[date_str] = {
+                        "date": date_str,
+                        "volume_shares": vol,
+                        "amount_billion": round(amt / 1e8, 0),
+                        "close": close,
+                        "change": change,
+                    }
+                elif isinstance(item, list) and len(item) >= 3:
+                    date_str = _roc_date(item[0])
+                    results_map[date_str] = {
+                        "date": date_str,
+                        "volume_shares": _safe_int(item[1]),
+                        "amount_billion": round(_safe_int(item[2]) / 1e8, 0),
+                        "close": _safe_float(item[4]) if len(item) >= 5 else 0,
+                        "change": _safe_float(item[5]) if len(item) >= 6 else 0,
+                    }
 
-    # 排序 + 取最近 N 天
-    results.sort(key=lambda x: x["date"], reverse=True)
+    results = sorted(results_map.values(), key=lambda x: x["date"], reverse=True)
+    print(f"  [taiex] 最終 {len(results)} 天")
+    if results:
+        print(f"  [taiex] 最新: {results[0]}")
     return results[:days]
 
 
@@ -274,11 +316,14 @@ def fetch_taiex_daily(days: int = 6) -> list:
 
 def fetch_margin_trading(date_str: str) -> Optional[dict]:
     """
-    抓取融資融券（TWSE MI_MARGN, selectType=MS 為整體市場）
-    回傳: { 'date':..., 'margin_buy':..., 'margin_sell':..., 'margin_balance':...,
-            'short_sell':..., 'short_cover':..., 'short_balance':..., 'margin_change':..., 'short_change':... }
+    抓取融資融券（TWSE MI_MARGN, selectType=MS 為整體市場統計）
+    使用舊版 API（非 rwd），回傳格式更穩定。
+    creditList: 2 rows [融資行, 融券行]
+      融資: [買進, 賣出, 現金償還, 前日餘額, 今日餘額, 限額]
+      融券: [賣出, 回補, 現券償還, 前日餘額, 今日餘額, 限額]
     """
-    url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+    # 舊版 API
+    url = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
     data = _get_json(url, params={
         "response": "json",
         "date": date_str,
@@ -287,44 +332,53 @@ def fetch_margin_trading(date_str: str) -> Optional[dict]:
     if not data:
         return None
 
-    # MI_MARGN 的 creditList 或 data
-    rows = data.get("creditList") or data.get("data") or []
-    if not rows:
-        return None
-
     result = {
         "date": date_str,
-        "margin_buy": 0,       # 融資買進
-        "margin_sell": 0,      # 融資賣出
-        "margin_balance": 0,   # 融資餘額
-        "margin_change": 0,    # 融資增減
-        "short_sell": 0,       # 融券賣出
-        "short_cover": 0,      # 融券回補
-        "short_balance": 0,    # 融券餘額
-        "short_change": 0,     # 融券增減
+        "margin_buy": 0, "margin_sell": 0, "margin_balance": 0, "margin_change": 0,
+        "short_sell": 0, "short_cover": 0, "short_balance": 0, "short_change": 0,
     }
 
-    # 通常最後一行是合計
-    for row in rows:
-        if len(row) < 8:
-            continue
-        name = str(row[0]).strip() if isinstance(row[0], str) else ""
-        if "合計" in name or name == "" or len(rows) == 1:
-            # 不同版本的欄位順序可能不同，嘗試解析
-            # 典型: [名稱, 融資買進, 融資賣出, 融資現償, 融資餘額(前), 融資餘額(今), 融資增減, ...]
-            result["margin_buy"] = _safe_int(row[1]) if len(row) > 1 else 0
-            result["margin_sell"] = _safe_int(row[2]) if len(row) > 2 else 0
-            if len(row) > 6:
-                result["margin_balance"] = _safe_int(row[5])
-                result["margin_change"] = _safe_int(row[6])
-            # 融券部分（通常在後半段欄位）
-            if len(row) > 12:
-                result["short_sell"] = _safe_int(row[7])
-                result["short_cover"] = _safe_int(row[8])
-                result["short_balance"] = _safe_int(row[11])
-                result["short_change"] = _safe_int(row[12])
+    # 嘗試多個可能的 key（不同版本 API 用不同 key）
+    rows = None
+    for key in ["creditList", "data", "totalList"]:
+        if key in data and data[key] and isinstance(data[key], list):
+            rows = data[key]
+            print(f"  [margin] {date_str}: found key='{key}', rows={len(rows)}")
+            break
 
-    return result
+    if not rows:
+        print(f"  [margin] {date_str}: 無資料 (keys={list(data.keys())}, stat={data.get('stat','')})")
+        return None
+
+    # Debug: 印出結構
+    for i, row in enumerate(rows[:3]):
+        if isinstance(row, list):
+            print(f"  [margin] row[{i}]({len(row)}欄): {row[:6]}")
+
+    # selectType=MS → 通常只有 2 行
+    for i, row in enumerate(rows):
+        if not isinstance(row, list) or len(row) < 4:
+            continue
+
+        if i == 0:  # 第一行 = 融資
+            result["margin_buy"] = _safe_int(row[0])
+            result["margin_sell"] = _safe_int(row[1])
+            prev_bal = _safe_int(row[3])  # 前日餘額
+            today_bal = _safe_int(row[4]) if len(row) > 4 else 0  # 今日餘額
+            result["margin_balance"] = today_bal
+            result["margin_change"] = today_bal - prev_bal
+
+        elif i == 1:  # 第二行 = 融券
+            result["short_sell"] = _safe_int(row[0])
+            result["short_cover"] = _safe_int(row[1])
+            prev_bal = _safe_int(row[3])
+            today_bal = _safe_int(row[4]) if len(row) > 4 else 0
+            result["short_balance"] = today_bal
+            result["short_change"] = today_bal - prev_bal
+
+    if result["margin_balance"] or result["short_balance"] or result["margin_buy"]:
+        return result
+    return None
 
 
 def fetch_margin_history(days: int = 6) -> list:
