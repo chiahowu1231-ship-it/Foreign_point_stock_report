@@ -2,7 +2,7 @@
 # Gemini analysis runner v8 — model fallback + prompt compression
 # ----------------------------------------------------------------
 # 修正重點：
-#   1. 預設模型改為 gemini-2.5-flash（2.0 系列已於 3/3 退役）
+#   1. 預設模型改為 gemini-2.5-pro（分析最專業，免費 25 RPD）
 #   2. 429 Quota Exceeded 時自動 fallback 到下一個模型（不再無效重試）
 #   3. Prompt 精簡：只送 Top 5 外資 × Top 5 檔（減少 60% token 消耗）
 #   4. Fixup pass 改為可選（節省 API 呼叫次數）
@@ -28,14 +28,15 @@ except ImportError:
 
 # ── 模型設定 ──────────────────────────────────────
 # ⚠️ gemini-2.0-flash / 1.5-flash / 2.0-flash-lite 已於 2026/3/3 退役！
-# 目前免費可用：gemini-2.5-flash / 2.5-flash-lite / 2.5-pro
-PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# 目前免費可用：gemini-2.5-pro / 2.5-flash / 2.5-flash-lite
+# 預設 gemini-2.5-pro（分析品質最高，免費 5 RPM / 25 RPD）
+PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
-# 429 時的 Fallback 順序
+# 429 時的 Fallback 順序（pro 爆額度 → flash 接手）
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",       # 10 RPM / 250 RPD（免費）
+    "gemini-2.5-pro",         # 5 RPM / 25 RPD（免費，最強）
+    "gemini-2.5-flash",       # 10 RPM / 250 RPD（免費，快速）
     "gemini-2.5-flash-lite",  # 15 RPM / 1000 RPD（免費，額度最高）
-    "gemini-2.5-pro",         # 5 RPM / 100 RPD（免費，最強但限額低）
 ]
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -432,8 +433,8 @@ def main():
             print("=" * 60)
             print("【429 Quota Exceeded 除錯指南】")
             print("1. 檢查 Google AI Studio 帳戶配額：https://aistudio.google.com/")
-            print("2. 免費帳戶的 gemini-2.5-pro 每日限額 100 RPD")
-            print("3. 建議使用 gemini-2.5-flash（免費 10 RPM / 250 RPD）")
+            print("2. gemini-2.5-pro 免費每日限額 25 RPD，會自動 fallback 到 flash")
+            print("3. 若連 flash 也 429，可能整個 project 額度耗盡，等隔天 PT 午夜重置")
             print("4. 或啟用 Google Cloud Billing 解除限制")
             print("5. 確認 GEMINI_API_KEY 對應的 Project 有正確啟用 API")
             print("=" * 60)
