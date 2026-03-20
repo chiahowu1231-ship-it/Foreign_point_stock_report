@@ -1,8 +1,8 @@
-name: 外資分點狙擊分析 (TW 14:30)
+name: 外資分點狙擊分析 (TW 18:00)
 
 on:
   schedule:
-    - cron: "30 6 * * 1-5"
+    - cron: "0 10 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: "gemini-2.0-flash"
+          GEMINI_MODEL: "gemini-2.5-pro"
           GEMINI_TEMPERATURE: "0.3"
           PROMPT_TOP_BROKERS: "5"
           PROMPT_TOP_STOCKS: "5"
@@ -108,7 +108,7 @@ jobs:
         run: |
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
           REPORT_DATE="$(TZ=Asia/Taipei date +'%Y-%m-%d')"
-          echo "MAIL_SUBJECT=【外資分點狙擊分析】${REPORT_DATE}（TW 14:30）${REPO_NAME}" >> $GITHUB_ENV
+          echo "MAIL_SUBJECT=【外資分點狙擊分析】${REPORT_DATE}（TW 18:00）${REPO_NAME}" >> $GITHUB_ENV
 
       - name: Send email (always)
         if: always()
