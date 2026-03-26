@@ -78,6 +78,7 @@ SECTION_STYLES = {
     "C": {"bg": "#EAFAF1", "border": "#27AE60", "icon": "&#x1F3AF;"},
     "D": {"bg": "#FDEDEC", "border": "#E74C3C", "icon": "&#x26A0;&#xFE0F;"},
     "E": {"bg": "#F4ECF7", "border": "#8E44AD", "icon": "&#x1F4A1;"},
+    "F": {"bg": "#EBF5FB", "border": "#1A5276", "icon": "&#x1F50D;"},
 }
 
 
@@ -95,6 +96,7 @@ def _format_ai_html(ai_text: str) -> str:
     lines = ai_text.strip().split("\n")
     html = []
     in_section = False
+    current_section = None
 
     for line in lines:
         stripped = line.strip()
@@ -102,7 +104,7 @@ def _format_ai_html(ai_text: str) -> str:
             continue
 
         # Section header: A) ... / B) ...
-        hm = re.match(r'^([A-E])\s*[)）]\s*(.*)', stripped)
+        hm = re.match(r'^([A-F])\s*[)）]\s*(.*)', stripped)
         if hm:
             if in_section:
                 html.append('</div></div>')
@@ -118,17 +120,33 @@ def _format_ai_html(ai_text: str) -> str:
                 f'<div style="padding:8px 16px 12px 20px;font-size:14px;line-height:1.9;color:#333;">'
             )
             in_section = True
+            current_section = letter
             continue
 
         if not in_section:
             html.append(f'<p style="font-size:13px;color:#666;margin:4px 0;">{_esc(stripped)}</p>')
             continue
 
-        # Numbered item: 1) 2) 3)
+        # Numbered item: 1) 2) 3) — 依區段用不同樣式
         nm = re.match(r'^(\d+)\s*[)）]\s*(.*)', stripped)
         if nm:
             num, text = nm.group(1), nm.group(2)
-            # 在 C 區偵測股票代碼
+
+            # ── B 區：外資券商名稱 → 金色卡片（與 C 區的綠色股票卡區分） ──
+            if current_section == "B":
+                html.append(
+                    f'<div style="margin:12px 0 4px;padding:10px 14px;'
+                    f'background:#FEF9E7;border-left:4px solid #D4AC0D;border-radius:4px;">'
+                    f'<span style="display:inline-block;min-width:22px;height:22px;'
+                    f'background:#D4AC0D;color:#fff;border-radius:4px;text-align:center;'
+                    f'line-height:22px;font-size:12px;font-weight:700;margin-right:10px;'
+                    f'vertical-align:middle;">{num}</span>'
+                    f'<span style="font-weight:700;font-size:14px;color:#7D6608;vertical-align:middle;">'
+                    f'{_style_keywords(_esc(text))}</span></div>'
+                )
+                continue
+
+            # ── C 區：偵測股票代碼 → 綠色卡片 ──
             stock_m = re.match(r'^(\d{4})\s+(.+)', text)
             if stock_m:
                 sid, rest = stock_m.groups()
@@ -143,6 +161,7 @@ def _format_ai_html(ai_text: str) -> str:
                     f'{sid} {_esc(rest)}</span></div>'
                 )
             else:
+                # ── A/D/E 區：一般藍色圓圈 ──
                 html.append(
                     f'<div style="margin:6px 0;padding-left:4px;">'
                     f'<span style="display:inline-block;min-width:20px;height:20px;'
@@ -329,7 +348,7 @@ def build_html(summary: dict) -> str:
         '<b>[免責聲明]</b> '
         '帶進帶出是違法的行為，此資料皆為網上根據盤後資訊大數據所取得訊息，'
         '非作為或被視為買進或售出標的的邀請或意象，'
-        '請自行依據取得資訊評估風險與獲利，賺有賠請斟酌。'
+        '請自行依據取得資訊評估風險與獲利，有賺有賠請斟酌。'
         '</div>'
     )
     p.append(
