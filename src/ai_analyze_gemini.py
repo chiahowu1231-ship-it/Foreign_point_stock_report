@@ -56,11 +56,11 @@ BASE_SLEEP = float(os.getenv("GEMINI_RETRY_BASE_SLEEP", "2.0"))
 # Fixup pass 開關（設為 0 可節省一次 API 呼叫）
 ENABLE_FIXUP = os.getenv("GEMINI_ENABLE_FIXUP", "1").strip() != "0"
 
-# Prompt 精簡設定
-PROMPT_TOP_BROKERS = int(os.getenv("PROMPT_TOP_BROKERS", "5"))  # 送幾家外資
-PROMPT_TOP_STOCKS = int(os.getenv("PROMPT_TOP_STOCKS", "5"))    # 每家送幾檔
+# Prompt 資料範圍（pro 模型可處理更多 context）
+PROMPT_TOP_BROKERS = int(os.getenv("PROMPT_TOP_BROKERS", "7"))  # 送幾家外資
+PROMPT_TOP_STOCKS = int(os.getenv("PROMPT_TOP_STOCKS", "7"))    # 每家送幾檔
 
-ANALYZER_VERSION = "v10-gemini25-market-context"
+ANALYZER_VERSION = "v11-pro-expert-deep"
 
 
 # ── 檔案讀寫 ──────────────────────────────────────
@@ -95,7 +95,7 @@ def embed(summary: dict, text: str, model_used: str = ""):
 
 def build_prompt(summary: dict) -> str:
     """
-    v9 prompt：外資分點 + 大盤籌碼（三大法人、量能、融資融券、期貨、千張大戶）
+    v11 expert prompt：面向專業操盤手的深度籌碼分析
     """
     top_preview = summary.get("top_preview") or []
     days = summary.get("days")
@@ -106,27 +106,30 @@ def build_prompt(summary: dict) -> str:
     errors = summary.get("errors") or []
 
     lines = []
-    lines.append("你是一位資深台股交易員與籌碼分析師。請用繁體中文、純文字、手機好讀格式輸出。")
-    lines.append("嚴格規則：只根據我提供的資料分析，不要編造新聞/題材/財報。")
-    lines.append("不要表格、不要用空白對齊；段落之間空一行；每點以 1) 2) 3) 編號。")
+
+    # ── 角色設定（專業級） ──
+    lines.append("你是華爾街等級的台股籌碼分析師，擁有 20 年經驗，報告對象是專業操盤手與法人投資經理。")
+    lines.append("語氣要求：專業、精準、有洞察力。使用繁體中文，純文字，手機好讀格式。")
+    lines.append("分析深度：不要泛泛而談，每一點都必須有『數據佐證 → 推論邏輯 → 操作意涵』三層結構。")
+    lines.append("嚴格規則：只根據我提供的資料分析，不要編造新聞/題材/財報/K線型態。")
+    lines.append("格式：不要表格；段落間空一行；每點以 1) 2) 3) 編號；子項目用 - 開頭。")
     lines.append("")
     lines.append(f"報表資訊：產生時間={gen_at}；近{days}日；資料筆數={total_rows}；券商OK={ok}；FAIL={fail}")
     if errors:
         lines.append("注意：若 FAIL>0，只能就『有資料的外資』下結論；缺資料者不得推論。")
     lines.append("")
 
-    # ── 大盤籌碼資料（新增）──
+    # ── 大盤籌碼資料 ──
     market_data = summary.get("market_data") or {}
     if HAS_MARKET_FORMAT and market_data:
         market_text = format_market_context_for_prompt(market_data)
         if market_text.strip():
             lines.append("=" * 40)
-            lines.append("以下是大盤籌碼資料（用於判斷多空環境、量能趨勢、法人動向）：")
+            lines.append("【大盤籌碼原始數據】")
             lines.append(market_text)
             lines.append("=" * 40)
             lines.append("")
     elif market_data:
-        # 沒有 format function，手動組裝簡要版
         inst = market_data.get("institutional") or []
         if inst and len(inst) > 0:
             today_inst = inst[0]
@@ -136,9 +139,9 @@ def build_prompt(summary: dict) -> str:
             lines.append(f"  自營商淨買超: {today_inst['dealer']['net']:,} 元")
             lines.append("")
 
-    # ── 外資分點明細 ──
+    # ── 外資分點明細（增加至 7 家 × 7 檔） ──
     brokers_to_send = top_preview[:PROMPT_TOP_BROKERS]
-    lines.append(f"外資明細（依外資總淨超排序，前{len(brokers_to_send)}家，每家Top{PROMPT_TOP_STOCKS}）：")
+    lines.append(f"【外資分點明細】（依總淨超排序，前{len(brokers_to_send)}家，每家Top{PROMPT_TOP_STOCKS}）")
     for block in brokers_to_send:
         lines.append(f"- {block.get('broker','')}｜總淨超 {block.get('total_net',0)} 張")
         for r in (block.get("rows") or [])[:PROMPT_TOP_STOCKS]:
@@ -147,7 +150,7 @@ def build_prompt(summary: dict) -> str:
             )
     lines.append("")
 
-    # ── 千張大戶（如果有）──
+    # ── 千張大戶 ──
     tdcc = market_data.get("tdcc") or []
     if tdcc:
         lines.append("【觀察個股千張大戶持股比例】")
@@ -155,41 +158,85 @@ def build_prompt(summary: dict) -> str:
             lines.append(f"  {d['stock_id']}｜千張以上: {d.get('holders_1000_plus',0)}人, 持股 {d.get('pct_1000_plus',0):.1f}%")
         lines.append("")
 
-    # ── 輸出結構指令 ──
-    lines.append("請依照以下輸出結構（每區塊中間空一行）：")
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  輸出結構指令（專業版）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    lines.append("請依照以下結構輸出完整報告（每區塊中間空一行）：")
     lines.append("")
-    lines.append("A) 大盤環境判斷（3~5點）：")
-    lines.append("   - 根據三大法人買賣超趨勢（近5日方向）、成交量變化（放量/縮量/持平）、")
-    lines.append("     融資融券增減、期貨淨部位，判斷目前多空氛圍。")
-    lines.append("   - 與前5天比較：量能是放大還是萎縮？法人連買還是轉賣？")
+
+    # A) 大盤環境
+    lines.append("A) 大盤籌碼環境研判（5~7 點）：")
+    lines.append("   每一點必須包含：具體數據 → 推論 → 操作意涵。")
+    lines.append("   必須涵蓋以下面向：")
+    lines.append("   - 外資現貨動向：近5日買賣超趨勢（連買/連賣/轉折），計算5日累計金額")
+    lines.append("   - 投信/自營商動向：是否與外資同向？若背離代表什麼？")
+    lines.append("   - 成交量分析：今日量能 vs 5日均量（放量/縮量/爆量倍率），量價配合度")
+    lines.append("   - 融資融券解讀：融資增減趨勢（散戶追漲程度）、券資比變化、軋空可能性")
+    lines.append("   - 期貨籌碼：外資台指期淨部位方向與變化幅度，多空轉折訊號")
+    lines.append("   - 多空結論：綜合以上，明確給出『偏多/中性/偏空』判斷及信心程度（高/中/低）")
     lines.append("")
-    lines.append("B) 外資力量排行榜：列出『總淨超Top3外資』，各至少 3 點（偏多/偏短/偏觀察）。")
+
+    # B) 外資排行
+    lines.append("B) 外資力量深度剖析（Top 3 外資，每家 4~6 點）：")
+    lines.append("   每家外資需分析：")
+    lines.append("   - 操作風格判讀：根據持股特徵（大型/中小型、電子/金融/傳產）判斷該外資近期策略")
+    lines.append("   - 買超集中度：前3大標的佔總淨超比例，若>50%代表高度集中（conviction trade）")
+    lines.append("   - 乖離率分布：多數標的乖離正/負？正乖離高代表『追漲/強勢佈局』，負乖離多代表『逢低承接/被套』")
+    lines.append("   - 跨外資交叉驗證：同一標的是否被多家外資同時買超？若是，代表共識度高")
+    lines.append("   - 多空定性：該外資整體偏多/偏空/中性，附帶簡短理由")
     lines.append("")
-    lines.append("C) 明日觀察清單（5檔）：每檔必含三行：")
-    lines.append("   1) 進場條件（文字描述：突破/回測/不跌破均價等；不要捏造K線數值）")
-    lines.append("   2) 停損邏輯（用均價/乖離/淨超集中度推導）")
-    lines.append("   3) 了結邏輯（乖離擴大、現價遠離均價、淨超集中反轉等）")
-    lines.append("   - 若有千張大戶資料，請一併考慮大戶持股集中度對操作的影響。")
+
+    # C) 觀察清單
+    lines.append("C) 明日觀察清單（5 檔，每檔 5 行）：")
+    lines.append("   選股邏輯：優先選『多家外資共同買超 + 正乖離 + 淨超張數大』的標的。")
+    lines.append("   每檔必須包含：")
+    lines.append("   1) 選入理由：哪幾家外資買超？總淨超多少？乖離率與均價相對位置")
+    lines.append("   2) 進場條件：基於均價/乖離率/淨超集中度，給出明確的進場觸發條件")
+    lines.append("   3) 停損邏輯：跌破均價多少%？或乖離率轉負？或外資淨超反轉的量化標準")
+    lines.append("   4) 了結邏輯：乖離率擴大至多少%以上？或外資連續N日減碼？具體數字")
+    lines.append("   5) 部位建議：建議倉位比例（如『試單1成/標準3成/重倉不超過5成』），及分批進場節奏")
+    lines.append("   - 若有千張大戶資料，請分析大戶籌碼集中度對股價支撐/壓力的影響。")
     lines.append("")
-    lines.append("D) 風控提醒（至少3點）：")
-    lines.append("   - 結合大盤量能、法人動向、融資水位給出具體風控建議。")
+
+    # D) 風控
+    lines.append("D) 風控與資金配置（5~7 點）：")
+    lines.append("   不是泛泛的『注意風險』，而是基於數據的具體建議：")
+    lines.append("   - 整體持股水位建議（如『建議總持股不超過6成』）及理由")
+    lines.append("   - 單一標的最大部位上限")
+    lines.append("   - 根據外資期貨空單水位，判斷系統性風險程度（低/中/高）")
+    lines.append("   - 融資水位對散戶追漲的警示（若融資餘額增加代表什麼）")
+    lines.append("   - 明日需關注的關鍵價位或事件（如指數支撐/壓力、選擇權結算日）")
+    lines.append("   - 若外資現貨與期貨方向矛盾，分析可能的策略意圖（避險？換倉？）")
     lines.append("")
-    lines.append("E) 一句話摘要（≤25字）。")
+
+    # E) 摘要
+    lines.append("E) 一句話摘要（≤30字，專業精準）。")
     lines.append("")
+
+    # F) 交叉比對
+    lines.append("F) 外資交叉比對亮點（3~5 點）：")
+    lines.append("   找出被 2 家以上外資同時買超的標的，分析共識度與潛在意義。")
+    lines.append("   格式：『XXXX 股名被 A、B、C 三家外資合計買超 N 張，乖離率 X%，暗示...』")
+    lines.append("")
+
+    # 硬性規則
     lines.append("硬性規則：")
-    lines.append("- 全文至少 35 行（含標題與編號行）。")
-    lines.append("- A / B / D 各至少 3 點（用 1) 2) 3)）。")
-    lines.append("- C 必須 5 檔、每檔至少 3 行（進場/停損/了結）。")
-    lines.append("- 大盤環境判斷(A)必須引用具體數據（如「外資連3日買超共XX億」「量能較5日均量放大X倍」）。")
-    lines.append("- 若不足 35 行或缺任一段落，請自行補齊直到符合規則。")
+    lines.append("- 全文至少 60 行（含標題與編號行）。")
+    lines.append("- A 段至少 5 點，每點需引用具體數據。B 段 Top3 外資各至少 4 點。")
+    lines.append("- C 必須 5 檔、每檔 5 行（選入理由/進場/停損/了結/部位）。")
+    lines.append("- D 段至少 5 點，必須包含具體持股水位數字。")
+    lines.append("- F 段至少 3 點交叉比對。")
+    lines.append("- 所有數據引用必須與我提供的原始數據一致，不得捏造。")
+    lines.append("- 若不足 60 行或缺任一段落(A~F)，請自行補齊直到符合規則。")
 
     return "\n".join(lines)
 
 
 def fixup_prompt(draft: str) -> str:
     return "\n".join([
-        "你是資深台股交易員與籌碼分析師。以下草稿不完整，請你『只補齊不足』並輸出完整 A~E。",
-        "硬性規則：全文至少30行；A/B/D 各至少3點；C 必須5檔且每檔3行（進場/停損/了結）。",
+        "你是華爾街等級的台股籌碼分析師。以下草稿不完整或不夠深入，請你『補齊並強化』後輸出完整 A~F。",
+        "硬性規則：全文至少60行；A至少5點(含數據)；B Top3外資各至少4點；C 5檔每檔5行；D至少5點(含持股水位)；F至少3點交叉比對。",
+        "每一點都要有『數據 → 推論 → 操作意涵』三層結構。",
         "請直接輸出『完整版本』，保持純文字、段落間空一行、每點用 1) 2) 3)。",
         "",
         "【草稿開始】",
@@ -337,10 +384,11 @@ def validate(text: str) -> list:
     if not s:
         return ["empty"]
 
-    if len(s.splitlines()) < 35:
-        problems.append("line_count<35")
+    if len(s.splitlines()) < 55:
+        problems.append(f"line_count={len(s.splitlines())}<55")
 
-    for key in ["A)", "B)", "C)", "D)", "E)"]:
+    # A~F 都必須存在
+    for key in ["A)", "B)", "C)", "D)", "E)", "F)"]:
         if key not in s:
             problems.append(f"missing {key}")
 
@@ -349,7 +397,7 @@ def validate(text: str) -> list:
         if i < 0:
             return 0
         end = len(s)
-        for nxt in ["B)", "C)", "D)", "E)"]:
+        for nxt in ["B)", "C)", "D)", "E)", "F)"]:
             if nxt == prefix:
                 continue
             j = s.find(nxt, i + 2)
@@ -358,16 +406,23 @@ def validate(text: str) -> list:
         block = s[i:end]
         return len(re.findall(r"(?m)^\s*\d\)\s+", block))
 
-    for sec in ["A)", "B)", "D)"]:
-        if count_points(sec) < 3:
-            problems.append(f"{sec} points<3")
+    # A >= 5, B >= 3 (top3 外資), D >= 5
+    if count_points("A)") < 5:
+        problems.append(f"A) points={count_points('A)')}<5")
+    if count_points("D)") < 4:
+        problems.append(f"D) points={count_points('D)')}<4")
 
+    # C >= 5 檔
     c_i = s.find("C)")
     if c_i >= 0:
         d_i = s.find("D)", c_i)
         c_block = s[c_i:(d_i if d_i > 0 else len(s))]
         if len(re.findall(r"(?m)^\s*\d\)\s+", c_block)) < 5:
             problems.append("C items<5")
+
+    # F >= 3
+    if count_points("F)") < 2:
+        problems.append(f"F) points={count_points('F)')}<2")
 
     return problems
 
