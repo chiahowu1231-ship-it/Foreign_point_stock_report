@@ -15,7 +15,8 @@ LEGEND_BROKERS = {
     # ✅ 新增：你提供的 a=b 可用網址對應
     "8960_F": ("8960", "香港上海匯豐"),
     "1650_F": ("1650", "新加坡商瑞銀"),
-    "6910_F": ("6910", "德信"),
+    # ❌ 移除：德信(6910)為台灣本土券商，非外資券商
+    # "6910_F": ("6910", "德信"),
 
     # ❌ 移除（你指定拿掉；且先前 summary 顯示查不到資料）[1](https://compal1-my.sharepoint.com/personal/chiaho_wu_compal_com/Documents/Microsoft%20Copilot%20Chat%20%E6%AA%94%E6%A1%88/summary.json)
     # "1530_F": ("1530", "瑞士商瑞銀"),
