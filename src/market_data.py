@@ -112,8 +112,9 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
       row 5: 合計（= 三大法人合計）
     有時會有「自營商合計」「外資及陸資合計」等合計行。
     """
+    # ⚠️ Bug fix: TWSE BFI82U 正確參數是 "date"，不是 "dayDate"
     url = "https://www.twse.com.tw/exchangeReport/BFI82U"
-    data = _get_json(url, params={"response": "json", "dayDate": date_str})
+    data = _get_json(url, params={"response": "json", "date": date_str})
     if not data or not data.get("data"):
         return None
 
@@ -338,10 +339,16 @@ def fetch_margin_trading(date_str: str) -> Optional[dict]:
         "short_sell": 0, "short_cover": 0, "short_balance": 0, "short_change": 0,
     }
 
-    # 嘗試多個可能的 key（不同版本 API 用不同 key）
+    # ── TWSE stat 欄位檢查（stat="no data" 代表該日無交易） ──
+    if data.get("stat", "").lower() not in ("ok", ""):
+        print(f"  [margin] {date_str}: stat={data.get('stat')}，非交易日或資料不存在")
+        return None
+
+    # ⚠️ Bug fix: TWSE MI_MARGN 現行 API 主要回傳 key 為 "data"（非 "creditList"）
+    # 嘗試順序改為 data → creditList → totalList，增加兜底的 HTML 欄位解析
     rows = None
-    for key in ["creditList", "data", "totalList"]:
-        if key in data and data[key] and isinstance(data[key], list):
+    for key in ["data", "creditList", "totalList"]:
+        if key in data and isinstance(data[key], list) and len(data[key]) > 0:
             rows = data[key]
             print(f"  [margin] {date_str}: found key='{key}', rows={len(rows)}")
             break
@@ -355,26 +362,27 @@ def fetch_margin_trading(date_str: str) -> Optional[dict]:
         if isinstance(row, list):
             print(f"  [margin] row[{i}]({len(row)}欄): {row[:6]}")
 
-    # selectType=MS → 通常只有 2 行
+    # selectType=MS → 通常 2 行：row[0]=融資, row[1]=融券
+    # TWSE 欄位：[買進, 賣出, 現金償還, 前日餘額, 今日餘額, 限額]
     for i, row in enumerate(rows):
         if not isinstance(row, list) or len(row) < 4:
             continue
 
         if i == 0:  # 第一行 = 融資
-            result["margin_buy"] = _safe_int(row[0])
+            result["margin_buy"]  = _safe_int(row[0])
             result["margin_sell"] = _safe_int(row[1])
-            prev_bal = _safe_int(row[3])  # 前日餘額
-            today_bal = _safe_int(row[4]) if len(row) > 4 else 0  # 今日餘額
-            result["margin_balance"] = today_bal
-            result["margin_change"] = today_bal - prev_bal
-
-        elif i == 1:  # 第二行 = 融券
-            result["short_sell"] = _safe_int(row[0])
-            result["short_cover"] = _safe_int(row[1])
             prev_bal = _safe_int(row[3])
             today_bal = _safe_int(row[4]) if len(row) > 4 else 0
+            result["margin_balance"] = today_bal
+            result["margin_change"]  = today_bal - prev_bal
+
+        elif i == 1:  # 第二行 = 融券
+            result["short_sell"]  = _safe_int(row[0])
+            result["short_cover"] = _safe_int(row[1])
+            prev_bal  = _safe_int(row[3])
+            today_bal = _safe_int(row[4]) if len(row) > 4 else 0
             result["short_balance"] = today_bal
-            result["short_change"] = today_bal - prev_bal
+            result["short_change"]  = today_bal - prev_bal
 
     if result["margin_balance"] or result["short_balance"] or result["margin_buy"]:
         return result
@@ -447,6 +455,11 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
             "dealer_net_oi": 0,
         }
 
+        # ⚠️ Bug fix: TAIFEX 自營商有兩行（自行買賣 + 避險），原本 if/elif 會互相覆蓋
+        # 改用累加器，確保兩行都加入 dealer_net_oi
+        dealer_acc = 0
+        has_foreign = has_trust = has_dealer = False
+
         # 找到所有表格的 tr
         for table in soup.find_all("table"):
             for tr in table.find_all("tr"):
@@ -458,24 +471,33 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
                 vals = [td.get_text(strip=True) for td in tds]
 
                 # 多空淨額-未平倉口數 = index 11（固定位置）
-                # 多空淨額-交易口數 = index 5（備用）
                 net_oi = _safe_int(vals[11]) if len(vals) > 11 else 0
                 net_trade = _safe_int(vals[5]) if len(vals) > 5 else 0
 
                 # 驗證：口數通常在 -500,000 ~ +500,000 之間
-                # 如果 > 1,000,000 代表可能拿到金額欄（千元），需要除以 1000 或用交易欄
                 if abs(net_oi) > 1_000_000:
                     print(f"  [futures] ⚠ {name} net_oi={net_oi} 異常大，改用 net_trade={net_trade}")
-                    net_oi = net_trade  # fallback 到交易口數
+                    net_oi = net_trade
 
-                if "外資" in name:
-                    result["foreign_net_oi"] = net_oi
+                if "外資" in name and "外資及陸資" in name:
+                    # 只取「外資及陸資」主行，排除子分類
+                    if not has_foreign:
+                        result["foreign_net_oi"] = net_oi
+                        has_foreign = True
+                elif "外資" in name and not has_foreign:
+                    result["foreign_net_oi"] += net_oi
+                    has_foreign = True
                 elif "投信" in name:
                     result["trust_net_oi"] = net_oi
+                    has_trust = True
                 elif "自營商" in name:
-                    result["dealer_net_oi"] = net_oi
+                    # 自營商有兩子行（自行買賣 + 避險），需累加
+                    dealer_acc += net_oi
+                    has_dealer = True
 
-        if any(v != 0 for k, v in result.items() if k != "date"):
+        result["dealer_net_oi"] = dealer_acc
+
+        if has_foreign or has_trust or has_dealer:
             return result
 
     except ImportError:
