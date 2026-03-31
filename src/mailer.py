@@ -374,12 +374,19 @@ def _render_broker_block(block: dict, rank: int) -> str:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 SECTION_STYLES = {
-    "A": {"bg": "#EBF5FB", "border": "#2E86C1", "icon": "📊", "label": "大盤籌碼環境研判"},
-    "B": {"bg": "#FEF9E7", "border": "#D4AC0D", "icon": "🏦", "label": "外資力量深度剖析"},
-    "C": {"bg": "#EAFAF1", "border": "#27AE60", "icon": "🎯", "label": "明日觀察清單"},
-    "D": {"bg": "#FDEDEC", "border": "#E74C3C", "icon": "⚠️", "label": "風控與資金配置"},
-    "E": {"bg": "#F4ECF7", "border": "#8E44AD", "icon": "💡", "label": "一句話摘要"},
-    "F": {"bg": "#EBF5FB", "border": "#1A5276", "icon": "🔍", "label": "外資交叉比對亮點"},
+    # header_bg = 全寬 banner 背景色, content_bg = 內容區淡底色, accent = 左邊線/數字圓圈色
+    "A": {"header_bg": "#1A6FA8", "content_bg": "#EBF5FB", "accent": "#2E86C1",
+          "icon": "📊", "label": "大盤籌碼環境研判"},
+    "B": {"header_bg": "#9A6F00", "content_bg": "#FEF9E7", "accent": "#D4AC0D",
+          "icon": "🏦", "label": "外資力量深度剖析"},
+    "C": {"header_bg": "#1A7A40", "content_bg": "#EAFAF1", "accent": "#27AE60",
+          "icon": "🎯", "label": "明日觀察清單"},
+    "D": {"header_bg": "#A93226", "content_bg": "#FDEDEC", "accent": "#E74C3C",
+          "icon": "⚠️", "label": "風控與資金配置"},
+    "E": {"header_bg": "#6C3483", "content_bg": "#F4ECF7", "accent": "#8E44AD",
+          "icon": "💡", "label": "一句話摘要"},
+    "F": {"header_bg": "#1A5276", "content_bg": "#EAF2FB", "accent": "#2471A3",
+          "icon": "🔍", "label": "外資交叉比對亮點"},
 }
 
 
@@ -399,179 +406,176 @@ def _format_ai_html(ai_text: str) -> str:
     html       = []
     in_section = False
     cur_letter = None
-
-    # 用於提取 E) 一句話摘要
     e_summary  = ""
 
     def _close_section():
+        nonlocal in_section
         if in_section:
-            html.append('</div></div>')  # close content div + section wrapper
+            html.append('</div></div>')  # close content + wrapper
+            in_section = False
 
-    def _process_inline(raw: str) -> str:
-        """_esc → **bold** → keyword highlight"""
+    def _pi(raw: str) -> str:
         return _style_keywords(_md_inline(_esc(raw)))
+
+    def _num_badge(num: str, color: str, shape: str = "circle") -> str:
+        radius = "50%" if shape == "circle" else "4px"
+        return (
+            f'<span style="display:inline-block;min-width:22px;height:22px;'
+            f'background:{color};color:#fff;border-radius:{radius};text-align:center;'
+            f'line-height:22px;font-size:12px;font-weight:700;margin-right:9px;'
+            f'vertical-align:middle;">{num}</span>'
+        )
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        # ── Section header: A) ... 到 F) ... ──
+        # ══════════════════════════════════════════
+        #  Section header  A) … F)
+        # ══════════════════════════════════════════
         hm = re.match(r'^([A-F])\s*[)）:：]\s*(.*)', stripped)
         if hm:
             _close_section()
             letter = hm.group(1)
-            title_from_ai = hm.group(2).strip().rstrip("：:").strip()
-            st = SECTION_STYLES.get(letter, {"bg": "#F5F5F5", "border": "#999", "icon": "▪", "label": ""})
-            default_label = st["label"]
-            # 優先使用 AI 輸出的標題（通常更完整）
-            display_title = title_from_ai if title_from_ai else default_label
+            ai_title = hm.group(2).strip().rstrip("：:").strip()
+            st = SECTION_STYLES.get(letter, {
+                "header_bg": "#555", "content_bg": "#F5F5F5",
+                "accent": "#999", "icon": "▪", "label": ""
+            })
+            display_title = ai_title if ai_title else st["label"]
 
-            # E) 一句話摘要：特殊卡片
+            # ── E) 一句話摘要：獨立漸層卡片，不走通用模板 ──
             if letter == "E":
+                e_summary = display_title
                 html.append(
-                    f'<div style="margin:20px 0 8px;padding:14px 20px;'
-                    f'background:linear-gradient(135deg,#F4ECF7,#EBD5F8);'
-                    f'border-left:5px solid #8E44AD;border-radius:4px;">'
-                    f'<div style="font-size:12px;font-weight:700;color:#6C3483;'
-                    f'margin-bottom:6px;">💡 一句話摘要</div>'
+                    f'<div style="margin:26px 0 4px;">'
+                    # 全寬 banner
+                    f'<div style="background:linear-gradient(90deg,{st["header_bg"]},#9B59B6);'
+                    f'padding:11px 18px;border-radius:6px 6px 0 0;">'
+                    f'<span style="font-size:15px;font-weight:800;color:#fff;letter-spacing:.5px;">'
+                    f'{st["icon"]}&nbsp; E）{st["label"]}</span></div>'
+                    # 摘要卡片內容
+                    f'<div style="background:{st["content_bg"]};border:1px solid #D2B4DE;'
+                    f'border-top:none;border-radius:0 0 6px 6px;padding:14px 20px;">'
                 )
                 if display_title:
-                    # 如果標題本身就是摘要內容
-                    e_summary = display_title
                     html.append(
-                        f'<div style="font-size:15px;font-weight:700;color:#4A235A;'
-                        f'line-height:1.6;">{_process_inline(e_summary)}</div>'
+                        f'<p style="margin:0;font-size:16px;font-weight:700;color:#4A235A;'
+                        f'line-height:1.7;">{_pi(display_title)}</p>'
                     )
-                html.append('</div>')
+                html.append('</div></div>')
                 in_section = True
                 cur_letter = "E"
                 continue
 
+            # ── 通用 Section banner ──
             html.append(
-                f'<div style="margin:18px 0 0;">'
-                # Section header bar
-                f'<div style="background:{st["bg"]};border-left:5px solid {st["border"]};'
-                f'padding:10px 16px;border-radius:0 5px 0 0;">'
-                f'<span style="font-size:14.5px;font-weight:700;color:{st["border"]};">'
-                f'{st["icon"]} {letter}）{_esc(display_title)}</span></div>'
-                # Content area
-                f'<div style="padding:10px 16px 14px 20px;font-size:13.5px;'
-                f'line-height:1.9;color:#333;background:{st["bg"]}22;">'
+                # 外層 wrapper
+                f'<div style="margin:26px 0 0;border-radius:6px;overflow:hidden;'
+                f'box-shadow:0 2px 6px rgba(0,0,0,.10);">'
+                # ★ 全寬深色 banner 標題
+                f'<div style="background:{st["header_bg"]};padding:12px 18px;">'
+                f'<span style="font-size:16px;font-weight:800;color:#fff;letter-spacing:.5px;">'
+                f'{st["icon"]}&nbsp; {letter}）{_esc(display_title)}</span></div>'
+                # 內容區
+                f'<div style="background:{st["content_bg"]};padding:12px 18px 16px;'
+                f'font-size:13.5px;line-height:1.9;color:#333;">'
             )
             in_section = True
             cur_letter = letter
             continue
 
-        # ── E) 後面的純文字行（當摘要本身在下一行時）──
-        if cur_letter == "E" and not e_summary:
-            e_summary = stripped
-            # 找到 E) 的 div 並追加文字
-            html.append(
-                f'<div style="margin-top:4px;font-size:15px;font-weight:700;color:#4A235A;">'
-                f'{_process_inline(stripped)}</div>'
-            )
+        # E) 後面的純文字行（摘要在下一行的情況）
+        if cur_letter == "E":
+            if not e_summary:
+                e_summary = stripped
+                html.append(f'<p style="margin:0;font-size:16px;font-weight:700;color:#4A235A;">{_pi(stripped)}</p>')
             continue
 
-        if not in_section or cur_letter == "E":
-            # 前言文字（A) 之前）
-            html.append(
-                f'<p style="font-size:13px;color:#666;margin:4px 0;">'
-                f'{_process_inline(stripped)}</p>'
-            )
+        if not in_section:
+            html.append(f'<p style="font-size:13px;color:#666;margin:4px 0;">{_pi(stripped)}</p>')
             continue
 
-        # ── 編號項目：1) 2) 3) ──
+        st = SECTION_STYLES.get(cur_letter, {"accent": "#555", "content_bg": "#FFF"})
+        accent = st["accent"]
+
+        # ══════════════════════════════════════════
+        #  編號項目  1) 2) 3)
+        # ══════════════════════════════════════════
         nm = re.match(r'^(\d+)\s*[)）.]\s*(.*)', stripped)
         if nm:
             num, text = nm.group(1), nm.group(2)
 
-            # B 區：外資券商名稱 → 金色卡片
             if cur_letter == "B":
+                # 金色券商名稱卡片
                 html.append(
                     f'<div style="margin:14px 0 4px;padding:10px 14px;'
-                    f'background:#FEF9E7;border:1px solid #F0D060;border-radius:5px;">'
-                    f'<span style="display:inline-block;min-width:22px;height:22px;'
-                    f'background:#D4AC0D;color:#fff;border-radius:4px;text-align:center;'
-                    f'line-height:22px;font-size:12px;font-weight:700;margin-right:10px;'
-                    f'vertical-align:middle;">{num}</span>'
-                    f'<span style="font-weight:700;font-size:14px;color:#7D6608;vertical-align:middle;">'
-                    f'{_process_inline(text)}</span></div>'
+                    f'background:#FFFBEE;border:1px solid #E8C840;border-radius:5px;">'
+                    + _num_badge(num, "#D4AC0D", "square")
+                    + f'<span style="font-weight:700;font-size:14px;color:#7D6608;'
+                    f'vertical-align:middle;">{_pi(text)}</span></div>'
                 )
-                continue
-
-            # C 區：偵測「NNNN 股名」股票標的 → 綠色卡片
-            stock_m = re.match(r'^(\d{4,5})\s+(.+)', text)
-            if cur_letter == "C" and stock_m:
-                sid, rest = stock_m.groups()
+            elif cur_letter == "C":
+                stock_m = re.match(r'^(\d{4,5})\s+(.+)', text)
+                if stock_m:
+                    sid, rest = stock_m.groups()
+                    html.append(
+                        f'<div style="margin:12px 0 4px;padding:9px 14px;'
+                        f'background:#E8F8F5;border-left:4px solid #1ABC9C;border-radius:0 5px 5px 0;">'
+                        + _num_badge(num, "#1ABC9C")
+                        + f'<span style="font-weight:800;font-size:14px;color:#0E6655;'
+                        f'vertical-align:middle;">{_esc(sid)}&nbsp;</span>'
+                        f'<span style="font-weight:600;font-size:14px;vertical-align:middle;">'
+                        f'{_pi(rest)}</span></div>'
+                    )
+                else:
+                    html.append(
+                        f'<div style="margin:10px 0 2px;padding:8px 14px;'
+                        f'background:#F0FBF8;border-left:3px solid #27AE60;border-radius:0 4px 4px 0;">'
+                        + _num_badge(num, "#27AE60")
+                        + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
+                    )
+            elif cur_letter == "D":
                 html.append(
-                    f'<div style="margin:12px 0 4px;padding:9px 14px;'
-                    f'background:#E8F8F5;border-left:4px solid #1ABC9C;border-radius:0 4px 4px 0;">'
-                    f'<span style="display:inline-block;min-width:20px;height:20px;'
-                    f'background:#1ABC9C;color:#fff;border-radius:50%;text-align:center;'
-                    f'line-height:20px;font-size:11px;font-weight:700;margin-right:8px;'
-                    f'vertical-align:middle;">{num}</span>'
-                    f'<span style="font-weight:700;font-size:14px;color:#1A6B5A;'
-                    f'vertical-align:middle;">{_esc(sid)}'
-                    f'</span><span style="font-weight:600;font-size:14px;vertical-align:middle;">'
-                    f' {_process_inline(rest)}</span></div>'
+                    f'<div style="margin:8px 0;padding:9px 14px;'
+                    f'background:#FFF5F5;border-left:3px solid #E74C3C;border-radius:0 4px 4px 0;">'
+                    + _num_badge(num, "#E74C3C")
+                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
-                continue
-
-            # F 區：交叉比對亮點 → 藍色框
-            if cur_letter == "F":
+            elif cur_letter == "F":
                 html.append(
                     f'<div style="margin:10px 0 4px;padding:9px 14px;'
-                    f'background:#EBF5FB;border-left:3px solid #2E86C1;border-radius:0 4px 4px 0;">'
-                    f'<span style="display:inline-block;min-width:20px;height:20px;'
-                    f'background:#2E86C1;color:#fff;border-radius:4px;text-align:center;'
-                    f'line-height:20px;font-size:11px;font-weight:700;margin-right:8px;'
-                    f'vertical-align:middle;">{num}</span>'
-                    f'<span style="font-size:13.5px;vertical-align:middle;">'
-                    f'{_process_inline(text)}</span></div>'
+                    f'background:#EAF2FB;border-left:3px solid #2471A3;border-radius:0 4px 4px 0;">'
+                    + _num_badge(num, "#2471A3", "square")
+                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
-                continue
-
-            # D 區：風控 → 橙紅色數字標記
-            if cur_letter == "D":
+            else:
+                # A 區（及預設）
                 html.append(
-                    f'<div style="margin:8px 0;padding:8px 14px;'
-                    f'background:#FFF5F5;border-left:3px solid #E74C3C;border-radius:0 4px 4px 0;">'
-                    f'<span style="display:inline-block;min-width:20px;height:20px;'
-                    f'background:#E74C3C;color:#fff;border-radius:50%;text-align:center;'
-                    f'line-height:20px;font-size:11px;font-weight:700;margin-right:8px;'
-                    f'vertical-align:middle;">{num}</span>'
-                    f'<span style="font-size:13.5px;vertical-align:middle;">'
-                    f'{_process_inline(text)}</span></div>'
+                    f'<div style="margin:8px 0;padding:7px 12px;'
+                    f'background:#F4F8FD;border-left:3px solid {accent};border-radius:0 4px 4px 0;">'
+                    + _num_badge(num, accent)
+                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
-                continue
-
-            # A 區（及預設）：藍色圓形數字
-            html.append(
-                f'<div style="margin:7px 0;padding-left:2px;">'
-                f'<span style="display:inline-block;min-width:20px;height:20px;'
-                f'background:#2E86C1;color:#fff;border-radius:50%;text-align:center;'
-                f'line-height:20px;font-size:11px;font-weight:700;margin-right:8px;'
-                f'vertical-align:middle;">{num}</span>'
-                f'<span style="font-size:13.5px;vertical-align:middle;">'
-                f'{_process_inline(text)}</span></div>'
-            )
             continue
 
-        # ── 子項目：- / • / * ──
+        # ══════════════════════════════════════════
+        #  子項目  - / • / *
+        # ══════════════════════════════════════════
         sm = re.match(r'^[-•\*＊]\s*(.*)', stripped)
         if sm:
             html.append(
-                f'<div style="margin:3px 0 3px 36px;padding:3px 10px;'
-                f'border-left:2px solid #C8D6E5;font-size:13px;color:#444;">'
-                f'{_process_inline(sm.group(1))}</div>'
+                f'<div style="margin:3px 0 3px 42px;padding:3px 10px;'
+                f'border-left:2px solid #C8D6E5;font-size:13px;color:#555;">'
+                f'{_pi(sm.group(1))}</div>'
             )
             continue
 
-        # ── 一般內文段落 ──
+        # ── 一般內文 ──
         html.append(
-            f'<div style="margin:4px 0 4px 4px;color:#444;font-size:13.5px;line-height:1.8;">'
-            f'{_process_inline(stripped)}</div>'
+            f'<div style="margin:4px 0 4px 6px;color:#444;font-size:13.5px;line-height:1.85;">'
+            f'{_pi(stripped)}</div>'
         )
 
     _close_section()

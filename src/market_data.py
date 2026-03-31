@@ -315,82 +315,207 @@ def fetch_taiex_daily(days: int = 6) -> list:
 #  3. 融資融券變化（全市場）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def fetch_margin_trading(date_str: str) -> Optional[dict]:
+def _parse_margin_rows(rows: list, date_str: str) -> Optional[dict]:
     """
-    抓取融資融券（TWSE MI_MARGN, selectType=MS 為整體市場統計）
-    使用舊版 API（非 rwd），回傳格式更穩定。
-    creditList: 2 rows [融資行, 融券行]
-      融資: [買進, 賣出, 現金償還, 前日餘額, 今日餘額, 限額]
-      融券: [賣出, 回補, 現券償還, 前日餘額, 今日餘額, 限額]
+    共用：從 2-row list 解析融資融券結果。
+    rows[0] = 融資行，rows[1] = 融券行
+    TWSE 欄位順序：[買進, 賣出, 現金償還, 前日餘額, 今日餘額, 限額]
     """
-    # 舊版 API
-    url = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
-    data = _get_json(url, params={
-        "response": "json",
-        "date": date_str,
-        "selectType": "MS",
-    })
-    if not data:
-        return None
-
     result = {
         "date": date_str,
         "margin_buy": 0, "margin_sell": 0, "margin_balance": 0, "margin_change": 0,
         "short_sell": 0, "short_cover": 0, "short_balance": 0, "short_change": 0,
     }
-
-    # ── TWSE stat 欄位檢查（stat="no data" 代表該日無交易） ──
-    if data.get("stat", "").lower() not in ("ok", ""):
-        print(f"  [margin] {date_str}: stat={data.get('stat')}，非交易日或資料不存在")
-        return None
-
-    # ⚠️ Bug fix: TWSE MI_MARGN 現行 API 主要回傳 key 為 "data"（非 "creditList"）
-    # 嘗試順序改為 data → creditList → totalList，增加兜底的 HTML 欄位解析
-    rows = None
-    for key in ["data", "creditList", "totalList"]:
-        if key in data and isinstance(data[key], list) and len(data[key]) > 0:
-            rows = data[key]
-            print(f"  [margin] {date_str}: found key='{key}', rows={len(rows)}")
-            break
-
-    if not rows:
-        print(f"  [margin] {date_str}: 無資料 (keys={list(data.keys())}, stat={data.get('stat','')})")
-        return None
-
-    # Debug: 印出結構
-    for i, row in enumerate(rows[:3]):
-        if isinstance(row, list):
-            print(f"  [margin] row[{i}]({len(row)}欄): {row[:6]}")
-
-    # selectType=MS → 通常 2 行：row[0]=融資, row[1]=融券
-    # TWSE 欄位：[買進, 賣出, 現金償還, 前日餘額, 今日餘額, 限額]
+    parsed = False
     for i, row in enumerate(rows):
         if not isinstance(row, list) or len(row) < 4:
             continue
-
-        if i == 0:  # 第一行 = 融資
+        if i == 0:
             result["margin_buy"]  = _safe_int(row[0])
             result["margin_sell"] = _safe_int(row[1])
-            prev_bal = _safe_int(row[3])
-            today_bal = _safe_int(row[4]) if len(row) > 4 else 0
-            result["margin_balance"] = today_bal
-            result["margin_change"]  = today_bal - prev_bal
-
-        elif i == 1:  # 第二行 = 融券
+            prev  = _safe_int(row[3])
+            today = _safe_int(row[4]) if len(row) > 4 else 0
+            result["margin_balance"] = today
+            result["margin_change"]  = today - prev
+            parsed = True
+        elif i == 1:
             result["short_sell"]  = _safe_int(row[0])
             result["short_cover"] = _safe_int(row[1])
-            prev_bal  = _safe_int(row[3])
-            today_bal = _safe_int(row[4]) if len(row) > 4 else 0
-            result["short_balance"] = today_bal
-            result["short_change"]  = today_bal - prev_bal
+            prev  = _safe_int(row[3])
+            today = _safe_int(row[4]) if len(row) > 4 else 0
+            result["short_balance"] = today
+            result["short_change"]  = today - prev
+    return result if parsed and (result["margin_balance"] or result["margin_buy"]) else None
 
-    if result["margin_balance"] or result["short_balance"] or result["margin_buy"]:
+
+def _margin_from_json(date_str: str) -> Optional[dict]:
+    """
+    Layer 1: TWSE exchangeReport/MI_MARGN JSON API
+    嘗試多種 selectType 組合（MS=市場統計, ALL=全部, 空白）
+    """
+    url = "https://www.twse.com.tw/exchangeReport/MI_MARGN"
+    for sel in ["MS", "ALL", ""]:
+        params = {"response": "json", "date": date_str}
+        if sel:
+            params["selectType"] = sel
+        data = _get_json(url, params=params, retries=2, timeout=12)
+        if not data:
+            continue
+
+        stat = str(data.get("stat", "")).lower()
+        if stat not in ("ok", ""):
+            print(f"  [margin-json] {date_str} sel={sel!r}: stat={stat}")
+            if "no data" in stat or "查無" in stat:
+                return None   # 確定無資料，不用再試其他 sel
+            continue
+
+        # 嘗試所有可能的 row key
+        rows = None
+        for key in ["data", "creditList", "totalList"]:
+            v = data.get(key)
+            if isinstance(v, list) and len(v) >= 2:
+                rows = v
+                print(f"  [margin-json] {date_str} sel={sel!r} key={key!r} rows={len(rows)}")
+                break
+
+        if rows:
+            for i, r in enumerate(rows[:3]):
+                if isinstance(r, list):
+                    print(f"    row[{i}]({len(r)}欄): {r[:6]}")
+            result = _parse_margin_rows(rows, date_str)
+            if result:
+                return result
+
+        time.sleep(0.5)
+
+    return None
+
+
+def _margin_from_openapi(date_str: str) -> Optional[dict]:
+    """
+    Layer 2: TWSE OpenData API（openapi.twse.com.tw）
+    回傳整個月的資料，找到對應日期後解析。
+    格式: [ {"Date":"YYYYMMDD","FundsMarginsShares":"...","ShortSalesShares":"...",...}, ... ]
+    """
+    # OpenAPI 只能按月查，取當月
+    ym = date_str[:6] + "01"
+    url = "https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        items = r.json()
+        if not isinstance(items, list):
+            items = list(items.values())[0] if isinstance(items, dict) else []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            d = str(item.get("Date", "")).replace("/", "")
+            if len(d) == 7:   # 民國年 1140330 → 20260330
+                d = str(int(d[:3]) + 1911) + d[3:]
+            if d != date_str:
+                continue
+
+            # OpenAPI 欄位名稱（與舊版 JSON 不同）
+            # 融資: FundsMarginsShares(買進), MarginSalesShares(賣出),
+            #       CashRedemptionShares(現金償還), PreviousFinancingBalance, FinancingBalance
+            # 融券: ShortSalesShares(賣出), ShortCoverShares(回補),
+            #       StockRedemptionShares(現券償還), PreviousShortBalance, ShortBalance
+            def _fi(k): return _safe_int(item.get(k, 0))
+
+            mb  = _fi("FinancingBalance") or _fi("TodayFinancingBalance")
+            mpb = _fi("PreviousFinancingBalance")
+            sb  = _fi("ShortBalance") or _fi("TodayShortBalance")
+            spb = _fi("PreviousShortBalance")
+
+            if mb == 0 and sb == 0:
+                print(f"  [margin-openapi] {date_str}: 欄位值均為0，跳過")
+                return None
+
+            print(f"  [margin-openapi] {date_str}: mb={mb:,} sb={sb:,}")
+            return {
+                "date": date_str,
+                "margin_buy":    _fi("FundsMarginsShares"),
+                "margin_sell":   _fi("MarginSalesShares"),
+                "margin_balance": mb,
+                "margin_change":  mb - mpb,
+                "short_sell":    _fi("ShortSalesShares"),
+                "short_cover":   _fi("ShortCoverShares"),
+                "short_balance": sb,
+                "short_change":  sb - spb,
+            }
+    except Exception as e:
+        print(f"  [margin-openapi] {date_str}: {e}")
+    return None
+
+
+def _margin_from_html(date_str: str) -> Optional[dict]:
+    """
+    Layer 3: 直接 HTML 解析 TWSE rwd 頁面（最後手段）
+    抓取整體市場融資融券統計表。
+    """
+    try:
+        from bs4 import BeautifulSoup
+        url = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+        params = {"date": date_str, "selectType": "MS", "response": "json"}
+        data = _get_json(url, params=params, retries=2, timeout=12)
+        if data:
+            stat = str(data.get("stat", "")).lower()
+            if "no data" in stat or "查無" in stat:
+                return None
+            rows = None
+            for key in ["data", "creditList", "totalList"]:
+                v = data.get(key)
+                if isinstance(v, list) and len(v) >= 2:
+                    rows = v
+                    break
+            if rows:
+                result = _parse_margin_rows(rows, date_str)
+                if result:
+                    print(f"  [margin-html-rwd] {date_str}: OK mb={result['margin_balance']:,}")
+                    return result
+    except Exception as e:
+        print(f"  [margin-html] {date_str}: {e}")
+    return None
+
+
+def fetch_margin_trading(date_str: str) -> Optional[dict]:
+    """
+    融資融券抓取 — 三層 fallback：
+      Layer 1: exchangeReport/MI_MARGN JSON（多 selectType）
+      Layer 2: openapi.twse.com.tw OpenData API
+      Layer 3: rwd/MI_MARGN JSON（新版路由）
+    """
+    # Layer 1
+    result = _margin_from_json(date_str)
+    if result:
+        print(f"  [margin] {date_str} ✓ Layer1 mb={result['margin_balance']:,} sb={result['short_balance']:,}")
         return result
+
+    print(f"  [margin] {date_str} Layer1 失敗，嘗試 Layer2 (OpenAPI)...")
+    time.sleep(0.5)
+
+    # Layer 2
+    result = _margin_from_openapi(date_str)
+    if result:
+        print(f"  [margin] {date_str} ✓ Layer2 mb={result['margin_balance']:,} sb={result['short_balance']:,}")
+        return result
+
+    print(f"  [margin] {date_str} Layer2 失敗，嘗試 Layer3 (rwd)...")
+    time.sleep(0.5)
+
+    # Layer 3
+    result = _margin_from_html(date_str)
+    if result:
+        print(f"  [margin] {date_str} ✓ Layer3 mb={result['margin_balance']:,} sb={result['short_balance']:,}")
+        return result
+
+    print(f"  [margin] {date_str} ✗ 三層均失敗")
     return None
 
 
 def fetch_margin_history(days: int = 6) -> list:
-    """抓取近 N 天的融資融券資料"""
+    """抓取近 N 天的融資融券（三層 fallback）"""
     results = []
     today = datetime.now(TZ)
 
@@ -405,7 +530,7 @@ def fetch_margin_history(days: int = 6) -> list:
         data = fetch_margin_trading(date_str)
         if data and data["margin_balance"] != 0:
             results.append(data)
-        time.sleep(0.8 + random.uniform(0, 0.3))
+        time.sleep(1.0 + random.uniform(0, 0.4))
 
     return results
 
