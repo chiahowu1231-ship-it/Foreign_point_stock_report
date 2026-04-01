@@ -121,209 +121,347 @@ def _style_keywords(text: str) -> str:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  共用 HTML 元件
+#  共用 HTML 元件（專業版）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# 區塊標題樣式
 SECTION_COLORS = {
-    "blue":   {"bg": "#1A5276", "light": "#EBF5FB"},
-    "navy":   {"bg": "#1A2A3A", "light": "#E8ECF0"},
-    "gold":   {"bg": "#9A7D0A", "light": "#FEF9E7"},
-    "green":  {"bg": "#1E8449", "light": "#EAFAF1"},
-    "red":    {"bg": "#922B21", "light": "#FDEDEC"},
-    "purple": {"bg": "#6C3483", "light": "#F4ECF7"},
-    "teal":   {"bg": "#148F77", "light": "#E8F8F5"},
-    "gray":   {"bg": "#515A5A", "light": "#F2F3F4"},
+    "blue":   {"bg": "#1A5276", "hdr": "#1F618D", "light": "#EBF5FB", "border": "#AED6F1"},
+    "navy":   {"bg": "#1A2A3A", "hdr": "#2C3E50", "light": "#EAF0F6", "border": "#AEB6BF"},
+    "gold":   {"bg": "#7D6608", "hdr": "#9A7D0A", "light": "#FEF9E7", "border": "#F9E79F"},
+    "green":  {"bg": "#1A6B3A", "hdr": "#1E8449", "light": "#EAFAF1", "border": "#A9DFBF"},
+    "red":    {"bg": "#7B241C", "hdr": "#922B21", "light": "#FDEDEC", "border": "#F5B7B1"},
+    "purple": {"bg": "#5B2C6F", "hdr": "#6C3483", "light": "#F4ECF7", "border": "#D7BDE2"},
+    "teal":   {"bg": "#0E6655", "hdr": "#148F77", "light": "#E8F8F5", "border": "#A2D9CE"},
+    "gray":   {"bg": "#424949", "hdr": "#515A5A", "light": "#F2F3F4", "border": "#BFC9CA"},
 }
 
 
-def _sec_hdr(icon: str, title: str, color_key: str = "blue") -> str:
-    """全寬區塊標題 bar"""
-    c = SECTION_COLORS.get(color_key, SECTION_COLORS["blue"])
+def _fmt_date(d: str) -> str:
+    """20260330 → 2026/03/30"""
+    d = str(d).strip()
+    if len(d) == 8 and d.isdigit():
+        return f"{d[:4]}/{d[4:6]}/{d[6:]}"
+    return d
+
+
+def _arrow(v) -> str:
+    """回傳趨勢箭頭 HTML（▲紅 / ▼綠）"""
+    try:
+        n = float(str(v).replace(",", ""))
+        if n > 0:
+            return '<span style="color:#C0392B;font-size:10px;"> ▲</span>'
+        elif n < 0:
+            return '<span style="color:#27AE60;font-size:10px;"> ▼</span>'
+    except Exception:
+        pass
+    return ""
+
+
+def _badge(text: str, bg: str, color: str = "#fff", px: int = 7) -> str:
     return (
-        f'<div style="margin:20px 0 10px;padding:10px 16px;'
-        f'background:{c["bg"]};border-radius:5px 5px 0 0;">'
-        f'<span style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.5px;">'
-        f'{icon}&nbsp; {_esc(title)}</span></div>'
+        f'<span style="display:inline-block;padding:1px {px}px;background:{bg};'
+        f'color:{color};border-radius:3px;font-size:10.5px;font-weight:700;'
+        f'vertical-align:middle;white-space:nowrap;">{text}</span>'
     )
 
 
-def _table_wrap(inner: str, border_color: str = "#DEE2E6") -> str:
+def _sec_hdr(icon: str, title: str, color_key: str = "blue", subtitle: str = "") -> str:
+    c = SECTION_COLORS.get(color_key, SECTION_COLORS["blue"])
+    sub_html = (
+        f'<span style="font-size:11px;color:rgba(255,255,255,.7);'
+        f'margin-left:10px;font-weight:400;">{_esc(subtitle)}</span>'
+        if subtitle else ""
+    )
+    return (
+        f'<div style="margin:22px 0 0;padding:10px 16px;'
+        f'background:linear-gradient(90deg,{c["bg"]},{c["hdr"]});'
+        f'border-radius:5px 5px 0 0;border-left:4px solid rgba(255,255,255,.35);">'
+        f'<span style="font-size:13.5px;font-weight:700;color:#fff;letter-spacing:.5px;">'
+        f'{icon}&nbsp; {_esc(title)}</span>{sub_html}</div>'
+    )
+
+
+def _table_open(col_styles: list = None) -> str:
+    """開啟專業表格，可選 colgroup 寬度。col_styles = [("60px",""), ("auto",""), ...]"""
+    cols = ""
+    if col_styles:
+        cols = "<colgroup>" + "".join(
+            f'<col style="width:{w};{s}">' for w, s in col_styles
+        ) + "</colgroup>"
     return (
         f'<table style="width:100%;border-collapse:collapse;font-size:12.5px;'
-        f'border:1px solid {border_color};border-radius:0 0 5px 5px;'
-        f'overflow:hidden;margin-bottom:4px;">{inner}</table>'
+        f'border:1px solid #D5D8DC;border-top:none;margin-bottom:0;">{cols}'
     )
 
 
-def _th(*cols, bg: str = "#2C3E50", color: str = "#ECF0F1") -> str:
+TABLE_CLOSE = "</table>"
+
+
+def _th_row(*cols, bg: str = "#2C3E50", color: str = "#ECF0F1") -> str:
+    """表頭列 — cols = (label, align) tuples"""
     cells = "".join(
-        f'<th style="padding:6px 10px;text-align:{align};background:{bg};'
-        f'color:{color};font-size:12px;font-weight:600;white-space:nowrap;">{label}</th>'
+        f'<th style="padding:7px 11px;text-align:{align};background:{bg};'
+        f'color:{color};font-size:11.5px;font-weight:600;'
+        f'white-space:nowrap;border-right:1px solid rgba(255,255,255,.12);">'
+        f'{label}</th>'
         for label, align in cols
     )
     return f"<tr>{cells}</tr>"
 
 
-def _td_row(*cells, bg: str = "#FFF") -> str:
-    parts = []
-    for item in cells:
-        if isinstance(item, tuple):
-            text, extra_style = item
-        else:
-            text, extra_style = item, ""
-        parts.append(
-            f'<td style="padding:5px 10px;border-top:1px solid #EAECEE;'
-            f'{extra_style}">{text}</td>'
-        )
-    return f'<tr style="background:{bg};">{"".join(parts)}</tr>'
+def _td(text, align="left", bold=False, color="", extra="", border=True) -> str:
+    b  = "font-weight:700;" if bold else ""
+    c  = f"color:{color};" if color else ""
+    br = "border-right:1px solid #EAECEE;" if border else ""
+    bt = "border-top:1px solid #EAECEE;"
+    return (
+        f'<td style="padding:6px 11px;text-align:{align};{bt}{br}{b}{c}{extra}">'
+        f'{text}</td>'
+    )
+
+
+def _tr(*cells, bg="#FFF", today=False) -> str:
+    if today:
+        bg = "#FFFDE7"  # 今日列淡黃高亮
+    return f'<tr style="background:{bg};">{"".join(cells)}</tr>'
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  大盤資料 HTML 渲染（修復缺失的三個區塊）
+#  大盤資料 HTML 渲染（專業版）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _render_taiex(taiex: list) -> str:
-    """大盤指數 + 成交量表格（原本未在 Email 中渲染，現在補上）"""
     if not taiex:
         return ""
-    rows_html = _th(
-        ("日期", "left"), ("收盤", "right"), ("漲跌", "right"), ("成交金額", "right"),
+    # 計算5日均量（用第2~6筆）供量能比較
+    amts = [d.get("amount_billion", 0) for d in taiex]
+    avg5 = sum(amts[1:6]) / max(len(amts[1:6]), 1) if len(amts) > 1 else 0
+
+    hdr = _sec_hdr("📊", "大盤指數 ＋ 成交量", "navy", "近 6 日")
+    tbl = _table_open([("100px",""), ("90px",""), ("90px",""), ("100px",""), ("90px","")])
+    tbl += _th_row(
+        ("日期", "left"), ("收盤指數", "right"), ("漲跌點", "right"),
+        ("成交金額", "right"), ("量比(5日均)", "right"),
+        bg="#2C3E50",
     )
     for i, d in enumerate(taiex[:6]):
-        chg = d.get("change", 0)
-        sign = "+" if chg > 0 else ""
-        chg_str = f"{sign}{chg:,.2f}" if isinstance(chg, float) else f"{sign}{chg}"
-        chg_c = _color(chg)
+        chg   = d.get("change", 0)
         close = d.get("close", 0)
-        amt = d.get("amount_billion", 0)
-        bg = "#F8F9FA" if i % 2 else "#FFF"
-        rows_html += _td_row(
-            _esc(d.get("date", "")),
-            (f'<span style="font-weight:600;">{close:,.2f}</span>' if isinstance(close, float) else _esc(str(close)), "text-align:right;"),
-            (f'<span style="color:{chg_c};font-weight:600;">{_esc(chg_str)}</span>', "text-align:right;"),
-            (f'{int(amt):,} 億', "text-align:right;color:#555;"),
+        amt   = d.get("amount_billion", 0)
+        chg_c = _color(chg)
+        sign  = "+" if chg > 0 else ""
+        chg_s = f"{sign}{chg:,.2f}" if isinstance(chg, float) else f"{sign}{chg}"
+
+        # 量比
+        ratio     = amt / avg5 if avg5 > 0 else 0
+        ratio_s   = f"{ratio:.2f}x" if avg5 > 0 else "—"
+        ratio_c   = "#C0392B" if ratio > 1.2 else "#27AE60" if ratio < 0.8 else "#555"
+        ratio_txt = (
+            f'<span style="color:{ratio_c};font-weight:{"700" if i==0 else "400"};">'
+            f'{ratio_s}</span>'
+            + (_badge("放量", "#E74C3C") if ratio > 1.2 and i == 0 else
+               _badge("縮量", "#27AE60") if ratio < 0.8 and i == 0 else "")
+        )
+
+        # 今日標籤
+        date_html = _fmt_date(d.get("date", ""))
+        if i == 0:
+            date_html += "&nbsp;" + _badge("最新", "#1A5276")
+
+        close_s = f"{close:,.2f}" if isinstance(close, float) else str(close)
+        bg      = "#FFFDE7" if i == 0 else ("#F8F9FA" if i % 2 else "#FFF")
+
+        tbl += _tr(
+            _td(date_html, bold=(i == 0)),
+            _td(f'<span style="font-weight:{"700" if i==0 else "600"};color:#333;">{close_s}</span>', "right"),
+            _td(f'<span style="color:{chg_c};font-weight:{"700" if i==0 else "500"};">{chg_s}</span>{_arrow(chg)}', "right"),
+            _td(f'<span style="{"font-weight:700;" if i==0 else ""}">{int(amt):,} 億</span>', "right"),
+            _td(ratio_txt, "right"),
             bg=bg,
         )
-    return _sec_hdr("📊", "大盤指數 ＋ 成交量（近日）", "navy") + _table_wrap(rows_html)
+    tbl += TABLE_CLOSE
+    return hdr + tbl
 
 
 def _render_institutional(inst: list) -> str:
-    """三大法人買賣超表格"""
     if not inst:
         return ""
-    rows_html = _th(
-        ("日期", "left"),
-        ("外資", "right"), ("投信", "right"), ("自營商", "right"), ("合計", "right"),
+    hdr = _sec_hdr("🏦", "三大法人買賣超（元）", "blue", "近 6 日")
+    tbl = _table_open([("100px",""), ("110px",""), ("110px",""), ("110px",""), ("110px","")])
+    tbl += _th_row(
+        ("日期", "left"), ("外資買賣超", "right"), ("投信買賣超", "right"),
+        ("自營買賣超", "right"), ("三大合計", "right"),
+        bg="#1F618D",
     )
     for i, d in enumerate(inst[:6]):
         fg  = d["foreign"]["net"]
         tr  = d["trust"]["net"]
         dl  = d["dealer"]["net"]
         tot = d.get("total_net", fg + tr + dl)
-        bg  = "#F8F9FA" if i % 2 else "#FFF"
+        bg  = "#FFFDE7" if i == 0 else ("#F8F9FA" if i % 2 else "#FFF")
 
-        def _cell(v):
-            s   = _fb(v)
-            col = _color(v)
-            bold = "font-weight:600;" if i == 0 else ""
-            return (f'<span style="color:{col};{bold}">{_esc(s)}</span>', "text-align:right;")
+        def _mc(v, is_today):
+            col  = _color(v)
+            bld  = "font-weight:700;" if is_today else "font-weight:500;"
+            return _td(
+                f'<span style="color:{col};{bld}">{_fb(v)}</span>{_arrow(v) if is_today else ""}',
+                "right"
+            )
 
-        rows_html += _td_row(_esc(d["date"]), _cell(fg), _cell(tr), _cell(dl),
-                             (f'<span style="color:{_color(tot)};font-weight:700;">{_esc(_fb(tot))}</span>',
-                              "text-align:right;font-weight:700;"),
-                             bg=bg)
-
-    return _sec_hdr("🏦", "三大法人買賣超（近日，元）", "blue") + _table_wrap(rows_html)
+        date_html = _fmt_date(d["date"]) + ("&nbsp;" + _badge("最新", "#1A5276") if i == 0 else "")
+        tbl += _tr(
+            _td(date_html, bold=(i == 0)),
+            _mc(fg, i == 0), _mc(tr, i == 0), _mc(dl, i == 0),
+            _td(
+                f'<span style="color:{_color(tot)};font-weight:{"800" if i==0 else "600"};">'
+                f'{_fb(tot)}</span>{_arrow(tot) if i==0 else ""}',
+                "right", bold=(i == 0)
+            ),
+            bg=bg,
+        )
+    tbl += TABLE_CLOSE
+    return hdr + tbl
 
 
 def _render_margin(margin: list) -> str:
-    """融資融券表格（原本未在 Email 中渲染，現在補上）"""
     if not margin:
         return ""
-    rows_html = _th(
+    hdr = _sec_hdr("💳", "融資融券（張）", "gray", "近 6 日｜散戶籌碼動向")
+    tbl = _table_open([
+        ("100px",""), ("90px",""), ("110px",""),
+        ("90px",""), ("110px",""), ("80px",""),
+    ])
+    tbl += _th_row(
         ("日期", "left"),
         ("融資增減", "right"), ("融資餘額", "right"),
         ("融券增減", "right"), ("融券餘額", "right"),
+        ("券資比", "right"),
+        bg="#515A5A",
     )
     for i, d in enumerate(margin[:6]):
-        mc  = d.get("margin_change", 0)
-        mb  = d.get("margin_balance", 0)
-        sc  = d.get("short_change", 0)
-        sb  = d.get("short_balance", 0)
-        bg  = "#F8F9FA" if i % 2 else "#FFF"
+        mc = d.get("margin_change", 0)
+        mb = d.get("margin_balance", 0)
+        sc = d.get("short_change", 0)
+        sb = d.get("short_balance", 0)
+        # 券資比（融券餘額 / 融資餘額）
+        sr_ratio = (sb / mb * 100) if mb > 0 else 0
+        sr_c     = "#C0392B" if sr_ratio > 15 else "#27AE60" if sr_ratio < 5 else "#555"
 
-        # 融資增加（散戶追多） = 偏多情緒 = 紅色；減少 = 綠色
         mc_c = "#C0392B" if mc > 0 else "#27AE60" if mc < 0 else "#555"
-        # 融券增加（放空增加）= 偏空 = 綠色；減少 = 紅色（軋空）
         sc_c = "#27AE60" if sc > 0 else "#C0392B" if sc < 0 else "#555"
+        bg   = "#FFFDE7" if i == 0 else ("#F8F9FA" if i % 2 else "#FFF")
 
-        rows_html += _td_row(
-            _esc(d.get("date", "")),
-            (f'<span style="color:{mc_c};font-weight:600;">{_fbi(mc)}</span>', "text-align:right;"),
-            (_fi(mb), "text-align:right;color:#555;"),
-            (f'<span style="color:{sc_c};font-weight:600;">{_fbi(sc)}</span>', "text-align:right;"),
-            (_fi(sb), "text-align:right;color:#555;"),
+        is_t = (i == 0)
+        date_html = _fmt_date(d.get("date","")) + ("&nbsp;" + _badge("最新","#424949") if is_t else "")
+
+        tbl += _tr(
+            _td(date_html, bold=is_t),
+            _td(f'<span style="color:{mc_c};font-weight:{"700" if is_t else "500"};">'
+                f'{_fbi(mc)}</span>{_arrow(mc) if is_t else ""}', "right"),
+            _td(f'<span style="{"font-weight:600;" if is_t else "color:#555;"}">{_fi(mb)}</span>', "right"),
+            _td(f'<span style="color:{sc_c};font-weight:{"700" if is_t else "500"};">'
+                f'{_fbi(sc)}</span>{_arrow(sc) if is_t else ""}', "right"),
+            _td(f'<span style="{"font-weight:600;" if is_t else "color:#555;"}">{_fi(sb)}</span>', "right"),
+            _td(f'<span style="color:{sr_c};font-weight:{"700" if is_t else "400"};">'
+                f'{sr_ratio:.1f}%</span>', "right"),
             bg=bg,
         )
-    return _sec_hdr("💳", "融資融券（近日，張）", "gray") + _table_wrap(rows_html)
+    # 說明列
+    tbl += (
+        '<tr><td colspan="6" style="padding:5px 11px;font-size:11px;color:#888;'
+        'background:#F8F9FA;border-top:1px solid #EAECEE;">'
+        '券資比說明：&lt;5% 偏多（軋空潛力高）｜5~15% 中性｜&gt;15% 偏空（放空壓力大）'
+        '</td></tr>'
+    )
+    tbl += TABLE_CLOSE
+    return hdr + tbl
 
 
 def _render_futures(futures: list) -> str:
-    """期貨三大法人台指期淨部位（修正：補上 header row）"""
     if not futures:
         return ""
-    rows_html = _th(
+    hdr = _sec_hdr("📉", "期貨三大法人台指期淨部位（口）", "purple", "近 6 日｜未平倉淨口數")
+    tbl = _table_open([("100px",""), ("130px",""), ("130px",""), ("120px","")])
+    tbl += _th_row(
         ("日期", "left"),
-        ("外資淨部位(口)", "right"),
-        ("投信淨部位(口)", "right"),
-        ("自營淨部位(口)", "right"),
+        ("外資淨口數", "right"), ("投信淨口數", "right"), ("自營淨口數", "right"),
+        bg="#6C3483",
     )
     for i, d in enumerate(futures[:6]):
         fg = d.get("foreign_net_oi", 0)
         tr = d.get("trust_net_oi", 0)
         dl = d.get("dealer_net_oi", 0)
-        bg = "#F8F9FA" if i % 2 else "#FFF"
+        bg = "#FFFDE7" if i == 0 else ("#F8F9FA" if i % 2 else "#FFF")
+        is_t = (i == 0)
 
-        def _fcell(v):
-            col   = _color(v)
-            bold  = "font-weight:700;" if i == 0 else ""
-            return (f'<span style="color:{col};{bold}">{_fbi(v)}</span>', "text-align:right;")
+        def _fc(v):
+            col = _color(v)
+            bld = "font-weight:700;" if is_t else "font-weight:500;"
+            return _td(
+                f'<span style="color:{col};{bld}">{_fbi(v)}</span>'
+                + (_arrow(v) if is_t else ""), "right"
+            )
 
-        rows_html += _td_row(_esc(d.get("date", "")), _fcell(fg), _fcell(tr), _fcell(dl), bg=bg)
+        date_html = _fmt_date(d.get("date","")) + ("&nbsp;" + _badge("最新","#6C3483") if is_t else "")
+        tbl += _tr(_td(date_html, bold=is_t), _fc(fg), _fc(tr), _fc(dl), bg=bg)
 
-    return _sec_hdr("📉", "期貨三大法人台指期淨部位（近日，口）", "purple") + _table_wrap(rows_html)
+    # 說明列
+    tbl += (
+        '<tr><td colspan="4" style="padding:5px 11px;font-size:11px;color:#888;'
+        'background:#F8F9FA;border-top:1px solid #EAECEE;">'
+        '正值=淨多單（看漲）｜負值=淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0'
+        '</td></tr>'
+    )
+    tbl += TABLE_CLOSE
+    return hdr + tbl
 
 
 def _render_tdcc(tdcc: list) -> str:
-    """千張大戶持股比例卡片（原本未在 Email 中渲染，現在補上）"""
     if not tdcc:
         return ""
-    inner = _th(
-        ("股票代號", "left"),
-        ("千張以上人數", "right"),
-        ("持股比例", "right"),
-        ("400~999張持股", "right"),
+    hdr = _sec_hdr("🏆", "千張大戶持股比例", "teal", "集保中心資料｜法人籌碼集中度")
+    tbl = _table_open([("80px",""), ("90px",""), ("80px",""), ("90px",""), ("80px","")])
+    tbl += _th_row(
+        ("股票代號", "left"), ("千張以上人數", "right"), ("持股比例", "right"),
+        ("400~999張人數", "right"), ("400~999張佔比", "right"),
+        bg="#148F77",
     )
     for i, d in enumerate(tdcc):
-        bg  = "#F8F9FA" if i % 2 else "#FFF"
-        pct = d.get("pct_1000_plus", 0)
-        cnt = d.get("holders_1000_plus", 0)
-        pct400 = d.get("pct_400_999", 0)
-        # 大戶持股>60% 視為籌碼集中，偏正面 → 紅色
-        pct_c = "#C0392B" if pct >= 60 else "#27AE60" if pct < 40 else "#555"
-        inner += _td_row(
-            f'<span style="font-weight:700;">{_esc(d.get("stock_id",""))}</span>',
-            (_fi(cnt), "text-align:right;"),
-            (f'<span style="color:{pct_c};font-weight:700;">{pct:.1f}%</span>', "text-align:right;"),
-            (f'{pct400:.1f}%' if pct400 else "—", "text-align:right;color:#888;"),
+        bg    = "#F8F9FA" if i % 2 else "#FFF"
+        pct   = d.get("pct_1000_plus", 0)
+        cnt   = d.get("holders_1000_plus", 0)
+        p400  = d.get("pct_400_999", 0)
+        c400  = d.get("holders_400_999", 0)
+        # 持股>60% = 籌碼高度集中 = 紅色；<40% = 分散 = 綠色
+        pct_c = "#C0392B" if pct >= 60 else "#27AE60" if pct < 40 else "#E67E22"
+        # 視覺比例 bar（max假設 80%）
+        bar_w = min(int(pct / 80 * 60), 60)
+        bar   = (
+            f'<span style="color:{pct_c};font-weight:700;">{pct:.1f}%</span>'
+            f'&nbsp;<span style="display:inline-block;width:{bar_w}px;height:8px;'
+            f'background:{pct_c};border-radius:2px;vertical-align:middle;opacity:.7;"></span>'
+        )
+        tbl += _tr(
+            _td(f'<span style="font-weight:700;color:#1A5276;">{_esc(d.get("stock_id",""))}</span>'),
+            _td(_fi(cnt), "right"),
+            _td(bar, "right"),
+            _td(_fi(c400) if c400 else "—", "right", color="#555"),
+            _td(f'{p400:.1f}%' if p400 else "—", "right", color="#888"),
             bg=bg,
         )
-    return _sec_hdr("🏆", "千張大戶持股比例（觀察清單個股）", "teal") + _table_wrap(inner)
+    # 說明列
+    tbl += (
+        '<tr><td colspan="5" style="padding:5px 11px;font-size:11px;color:#888;'
+        'background:#F8F9FA;border-top:1px solid #EAECEE;">'
+        '千張大戶持股 &gt;60% = 籌碼高度集中（支撐強）｜&lt;40% = 籌碼分散（浮額多）'
+        '</td></tr>'
+    )
+    tbl += TABLE_CLOSE
+    return hdr + tbl
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  外資分點 Top 3 渲染（升級版）
+#  外資分點渲染（專業版）
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _render_broker_block(block: dict, rank: int) -> str:
@@ -331,42 +469,71 @@ def _render_broker_block(block: dict, rank: int) -> str:
     total_net = block.get("total_net", 0)
     rows      = block.get("rows") or []
     nc        = _color(total_net, "#555")
+    medal     = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
 
-    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "▪")
-
+    # 外資券商 header 列
+    net_badge_bg = "#C0392B" if total_net > 0 else "#27AE60" if total_net < 0 else "#888"
     header = (
-        f'<div style="margin:10px 0 0;padding:8px 14px;'
-        f'background:#F5F8FA;border-left:4px solid #2C3E50;border-radius:0 4px 4px 0;">'
-        f'<span style="font-size:14px;font-weight:700;color:#2C3E50;">{medal} {broker}</span>'
-        f'<span style="float:right;font-size:13px;color:{nc};font-weight:700;">'
-        f'總淨超 {_fi(total_net)} 張</span><div style="clear:both;"></div></div>'
+        f'<div style="margin:12px 0 0;padding:9px 14px;'
+        f'background:linear-gradient(90deg,#2C3E50,#34495E);'
+        f'border-radius:5px 5px 0 0;'
+        f'display:flex;align-items:center;justify-content:space-between;">'
+        f'<span style="font-size:14px;font-weight:700;color:#ECF0F1;">'
+        f'{medal}&nbsp; {broker}</span>'
+        f'<span style="font-size:12px;">'
+        f'<span style="color:#AAB7B8;">總淨超&nbsp;</span>'
+        f'<span style="color:{nc};font-weight:800;font-size:14px;">{_fi(total_net)}</span>'
+        f'<span style="color:#AAB7B8;font-size:11px;">&nbsp;張</span>'
+        f'</span></div>'
     )
 
     if not rows:
-        return header
+        return header + '<div style="padding:8px 14px;background:#F8F9FA;border:1px solid #D5D8DC;border-top:none;border-radius:0 0 5px 5px;font-size:12px;color:#888;">本期無明細資料</div>'
 
-    rows_html = _th(
-        ("#", "center"), ("代號 股名", "left"), ("淨超(張)", "right"),
-        ("均價", "right"), ("現價", "right"), ("乖離", "right"),
-        bg="#34495E",
+    tbl = _table_open([("30px",""), ("auto",""), ("80px",""), ("70px",""), ("70px",""), ("70px","")])
+    tbl += _th_row(
+        ("#", "center"), ("代號　股票名稱", "left"), ("淨超(張)", "right"),
+        ("區間均價", "right"), ("現　　價", "right"), ("乖離率", "right"),
+        bg="#1A252F",
     )
-    for i, r in enumerate(rows[:5], 1):
-        nv  = r.get("net", 0)
-        rc  = _color(nv)
-        bias_val = r.get("bias", "")
-        bias_c   = _color(str(bias_val).replace("%",""))
-        bg  = "#F8F9FA" if i % 2 else "#FFF"
-        rows_html += _td_row(
-            (f'<span style="color:#888;">{i}</span>', "text-align:center;width:28px;"),
-            f'<span style="font-weight:600;">{_esc(r.get("sid",""))} {_esc(r.get("name",""))}</span>',
-            (f'<span style="color:{rc};font-weight:700;">{_fi(nv)}</span>', "text-align:right;"),
-            (f'{_esc(str(r.get("avg","")))}', "text-align:right;color:#555;"),
-            (f'{_esc(str(r.get("price","")))}', "text-align:right;color:#333;font-weight:600;"),
-            (f'<span style="color:{bias_c};">{_esc(str(bias_val))}</span>', "text-align:right;"),
+    for j, r in enumerate(rows[:5], 1):
+        nv       = r.get("net", 0)
+        rc       = _color(nv)
+        bias_raw = str(r.get("bias", "")).replace("%", "").strip()
+        try:
+            bv   = float(bias_raw)
+            # 乖離率色階：>5% 深紅、1~5% 淺紅、-1~1% 灰、-1~-5% 淺綠、<-5% 深綠
+            if bv > 5:
+                bias_c, bias_bg = "#922B21", "#FADBD8"
+            elif bv > 1:
+                bias_c, bias_bg = "#C0392B", "#FDF2F2"
+            elif bv < -5:
+                bias_c, bias_bg = "#1A5632", "#D5F5E3"
+            elif bv < -1:
+                bias_c, bias_bg = "#27AE60", "#EAFAF1"
+            else:
+                bias_c, bias_bg = "#555", "#F8F9FA"
+            bias_html = (
+                f'<span style="display:inline-block;padding:1px 6px;'
+                f'background:{bias_bg};color:{bias_c};border-radius:3px;'
+                f'font-size:11.5px;font-weight:700;">{r.get("bias","")}</span>'
+            )
+        except Exception:
+            bias_html = _esc(str(r.get("bias", "")))
+
+        bg = "#FDFEFE" if j % 2 else "#F2F3F4"
+        tbl += _tr(
+            _td(f'<span style="color:#888;font-size:11px;">{j}</span>', "center"),
+            _td(f'<span style="font-weight:700;color:#1A5276;">{_esc(r.get("sid",""))}</span>'
+                f'&nbsp;<span style="font-weight:600;color:#2C3E50;">{_esc(r.get("name",""))}</span>'),
+            _td(f'<span style="color:{rc};font-weight:700;">{_fi(nv)}</span>', "right"),
+            _td(f'<span style="color:#7F8C8D;">{_esc(str(r.get("avg","")))}</span>', "right"),
+            _td(f'<span style="font-weight:700;color:#333;">{_esc(str(r.get("price","")))}</span>', "right"),
+            _td(bias_html, "right"),
             bg=bg,
         )
-
-    return header + _table_wrap(rows_html, border_color="#DEE2E6")
+    tbl += TABLE_CLOSE
+    return header + tbl
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
