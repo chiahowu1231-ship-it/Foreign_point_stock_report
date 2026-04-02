@@ -1000,8 +1000,657 @@ def build_plain(summary: dict) -> str:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  A4 分析報告 PDF（reportlab）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _pdf_font():
+    """回傳 (font_name, bold_name)。嘗試 NotoSansTC；失敗回 Helvetica。"""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    for path in [
+        os.path.join("fonts", "NotoSansTC-Regular.ttf"),
+        os.path.join("fonts", "NotoSansCJK-Regular.ttc"),
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ]:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont("NotoTC", path))
+                pdfmetrics.registerFont(TTFont("NotoTC-B", path))
+                pdfmetrics.registerFontFamily("NotoTC", normal="NotoTC", bold="NotoTC-B")
+                return "NotoTC", "NotoTC-B"
+            except Exception:
+                pass
+    return "Helvetica", "Helvetica-Bold"
+
+
+def build_analysis_pdf(summary: dict, pdf_path: str):
+    """
+    專業 A4 分析報告 PDF：
+    - BaseDocTemplate + PageTemplate（每頁固定頁首 / 頁尾 / 頁碼）
+    - 封面（深藍漸層、報告資訊表格）
+    - 一、大盤環境速覽
+    - 二、外資分點明細
+    - 三、千張大戶持股
+    - 四、AI 深度分析（A~F 分段彩色 banner）
+    - 免責聲明
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import (
+        BaseDocTemplate, PageTemplate, Frame,
+        Table, TableStyle, Paragraph, Spacer,
+        HRFlowable, KeepTogether, PageBreak, NextPageTemplate,
+    )
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+
+    os.makedirs(os.path.dirname(pdf_path) if os.path.dirname(pdf_path) else ".", exist_ok=True)
+
+    FN, FNB = _pdf_font()        # normal / bold font name
+    PW, PH  = A4                 # 595 x 842 pt
+    ML = MR = 18 * mm
+    MT = 28 * mm                 # top margin（留給 header）
+    MB = 22 * mm                 # bottom margin（留給 footer）
+    CW = PW - ML - MR            # content width ≈ 559 pt
+
+    # ─── 顏色 ────────────────────────────────────────
+    HEX = colors.HexColor
+    C = dict(
+        navy   = HEX("#0D1F3C"),
+        blue   = HEX("#1A4B7A"),
+        blue2  = HEX("#1F6FB2"),
+        sky    = HEX("#D6E8F7"),
+        green  = HEX("#145A32"),
+        green2 = HEX("#1A7A40"),
+        lt_grn = HEX("#D5F5E3"),
+        red    = HEX("#7B241C"),
+        red2   = HEX("#C0392B"),
+        lt_red = HEX("#FADBD8"),
+        purple = HEX("#4A235A"),
+        purple2= HEX("#7D3C98"),
+        gold   = HEX("#6E4B00"),
+        gold2  = HEX("#B7950B"),
+        teal   = HEX("#0B5345"),
+        teal2  = HEX("#148F77"),
+        gray   = HEX("#2C3E50"),
+        lt_gray= HEX("#F2F3F4"),
+        lt_yel = HEX("#FFFDE7"),
+        border = HEX("#BFC9CA"),
+        white  = colors.white,
+        pos    = HEX("#C0392B"),
+        neg    = HEX("#1A7A40"),
+        neu    = HEX("#555555"),
+    )
+
+    def vc(v) -> colors.Color:
+        """正值=紅, 負值=綠, 零=灰"""
+        try:
+            n = float(str(v).replace(",","").replace("+","")
+                      .replace("億","").replace("萬","").replace("口",""))
+            return C["pos"] if n > 0 else C["neg"] if n < 0 else C["neu"]
+        except Exception:
+            return C["neu"]
+
+    def hex_of(col: colors.Color) -> str:
+        try:
+            return "#{:02X}{:02X}{:02X}".format(
+                int(col.red*255), int(col.green*255), int(col.blue*255))
+        except Exception:
+            return "#333333"
+
+    # ─── ParagraphStyle 工廠 ─────────────────────────
+    _ps_cache: dict = {}
+    def ps(name, **kw) -> ParagraphStyle:
+        key = name + str(sorted(kw.items()))
+        if key not in _ps_cache:
+            d = dict(fontName=FN, fontSize=9, leading=13,
+                     textColor=HEX("#222222"), spaceAfter=0, spaceBefore=0)
+            d.update(kw)
+            _ps_cache[key] = ParagraphStyle(name + str(len(_ps_cache)), **d)
+        return _ps_cache[key]
+
+    def p(txt, **kw) -> Paragraph:
+        return Paragraph(str(txt), ps("_", **kw))
+
+    def pv(val, bold=False, size=8.5) -> Paragraph:
+        """帶顏色的數值段落"""
+        col  = vc(val)
+        hc   = hex_of(col)
+        fn   = FNB if bold else FN
+        return p(f'<font color="{hc}" name="{fn}">{val}</font>',
+                 fontSize=size, leading=size+3, fontName=fn)
+
+    # ─── 共用 TableStyle ─────────────────────────────
+    def ts_base(hdr_bg, alt="#F8F9FA") -> list:
+        return [
+            ("BACKGROUND",   (0,0),(-1,0),   hdr_bg),
+            ("TEXTCOLOR",    (0,0),(-1,0),   C["white"]),
+            ("FONTNAME",     (0,0),(-1,0),   FNB),
+            ("FONTNAME",     (0,1),(-1,-1),  FN),
+            ("FONTSIZE",     (0,0),(-1,-1),  8),
+            ("TOPPADDING",   (0,0),(-1,-1),  4),
+            ("BOTTOMPADDING",(0,0),(-1,-1),  4),
+            ("LEFTPADDING",  (0,0),(-1,-1),  6),
+            ("RIGHTPADDING", (0,0),(-1,-1),  6),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1), [C["white"], HEX(alt)]),
+            ("LINEBELOW",    (0,0),(-1,0),   0.8, C["border"]),
+            ("LINEABOVE",    (0,0),(-1,0),   0,   C["white"]),
+            ("INNERGRID",    (0,1),(-1,-1),  0.25,C["border"]),
+            ("BOX",          (0,0),(-1,-1),  0.5, C["border"]),
+            ("VALIGN",       (0,0),(-1,-1),  "MIDDLE"),
+        ]
+
+    def today_row(ts: list, row=1):
+        """把指定 row 塗淡黃（今日最新）"""
+        ts.append(("BACKGROUND",(0,row),(-1,row), C["lt_yel"]))
+        ts.append(("FONTNAME",  (0,row),(-1,row), FNB))
+
+    # ─── 區塊標題 bar ────────────────────────────────
+    def sec_bar(label: str, bg: colors.Color, accent: colors.Color,
+                subtitle: str = "") -> list:
+        """回傳 [accent_bar_tbl, title_tbl] flowable list"""
+        # 左側 3pt 色塊 + 標題文字
+        inner = [
+            p(label, fontName=FNB, fontSize=11.5, leading=16,
+              textColor=C["white"]),
+        ]
+        if subtitle:
+            inner.append(p(subtitle, fontName=FN, fontSize=8,
+                           textColor=HEX("#CCE4F7")))
+
+        title_tbl = Table([inner], colWidths=[CW])
+        title_tbl.setStyle(TableStyle([
+            ("BACKGROUND",   (0,0),(-1,-1), bg),
+            ("LEFTPADDING",  (0,0),(-1,-1), 14),
+            ("TOPPADDING",   (0,0),(-1,-1), 7),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+            ("LINEAFTER",    (0,0),(0,-1),  4, accent),  # 左邊色條
+        ]))
+        return [Spacer(1, 5*mm), title_tbl]
+
+    # ─── 子標題（表格前） ────────────────────────────
+    def sub_hdr(label: str) -> list:
+        tbl = Table([[p(label, fontName=FNB, fontSize=9,
+                        textColor=C["blue2"])]],
+                    colWidths=[CW])
+        tbl.setStyle(TableStyle([
+            ("LINEBELOW", (0,0),(-1,-1), 1.2, C["blue2"]),
+            ("TOPPADDING",(0,0),(-1,-1), 6),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+            ("LEFTPADDING",(0,0),(-1,-1), 2),
+        ]))
+        return [Spacer(1, 3*mm), tbl, Spacer(1, 1.5*mm)]
+
+    # ─── Page template（每頁頁首頁尾） ───────────────
+    report_date = datetime.now(TZ).strftime("%Y-%m-%d")
+    gen_at      = summary.get("generated_at", "")
+    days        = summary.get("days", 5)
+    ok          = summary.get("success", False)
+
+    _page_num = [0]   # mutable counter
+
+    def _draw_page(canvas, doc):
+        _page_num[0] += 1
+        canvas.saveState()
+
+        # ── 頁首 ──
+        y_hdr = PH - 13 * mm
+        canvas.setFillColor(C["navy"])
+        canvas.rect(ML, y_hdr, CW, 9*mm, fill=1, stroke=0)
+        canvas.setFillColor(C["white"])
+        canvas.setFont(FNB, 8.5)
+        canvas.drawString(ML + 4*mm, y_hdr + 3*mm, "外資分點狙擊分析報告")
+        canvas.setFont(FN, 7.5)
+        canvas.drawRightString(ML + CW - 4*mm, y_hdr + 3*mm,
+                               f"報告日期：{report_date}  ｜  產生時間：{gen_at}")
+        # 頁首底線
+        canvas.setStrokeColor(C["blue2"])
+        canvas.setLineWidth(1.5)
+        canvas.line(ML, y_hdr, ML + CW, y_hdr)
+
+        # ── 頁尾 ──
+        y_ftr = MB - 6*mm
+        canvas.setStrokeColor(C["border"])
+        canvas.setLineWidth(0.5)
+        canvas.line(ML, y_ftr + 5*mm, ML + CW, y_ftr + 5*mm)
+        canvas.setFillColor(C["neu"])
+        canvas.setFont(FN, 7)
+        canvas.drawString(ML, y_ftr + 2*mm,
+                          "IKE Analysis System  ｜  此報告由 GitHub Actions 自動產生")
+        canvas.setFont(FNB, 7.5)
+        canvas.drawRightString(ML + CW, y_ftr + 2*mm,
+                               f"第 {_page_num[0]} 頁")
+
+        canvas.restoreState()
+
+    frame = Frame(ML, MB, CW, PH - MT - MB, id="main")
+    template = PageTemplate(id="default", frames=[frame], onPage=_draw_page)
+
+    doc = BaseDocTemplate(
+        pdf_path,
+        pagesize=A4,
+        pageTemplates=[template],
+        title="外資分點狙擊分析報告",
+        author="IKE Analysis System",
+        leftMargin=ML, rightMargin=MR,
+        topMargin=MT,  bottomMargin=MB,
+    )
+
+    story = []
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  封面 Header Block
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    market  = summary.get("market_data") or {}
+    taiex   = market.get("taiex") or []
+    inst    = market.get("institutional") or []
+    futures = market.get("futures") or []
+    tdcc    = market.get("tdcc") or []
+    top_p   = summary.get("top_preview") or []
+    ai_text = (summary.get("ai_analysis") or "").strip()
+
+    status_color = C["green2"] if ok else C["red2"]
+    status_txt   = "執行成功" if ok else "部分失敗"
+
+    # 主標題區
+    title_block = Table([
+        [p("外資分點狙擊分析報告", fontName=FNB, fontSize=20, leading=26,
+           textColor=C["white"]),
+         p(f'<font color="{hex_of(status_color)}">{status_txt}</font>',
+           fontName=FNB, fontSize=10, textColor=C["white"])],
+        [p(f"近 {days} 日分析  ｜  {report_date}", fontName=FN, fontSize=9.5,
+           textColor=HEX("#A9CCE3")),
+         ""],
+    ], colWidths=[CW*0.72, CW*0.28])
+    title_block.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0),(-1,-1), C["navy"]),
+        ("TOPPADDING",   (0,0),(-1,-1), 10),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 10),
+        ("LEFTPADDING",  (0,0),(-1,-1), 14),
+        ("RIGHTPADDING", (0,0),(-1,-1), 10),
+        ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
+        ("ALIGN",        (1,0),(-1,-1), "RIGHT"),
+        ("SPAN",         (1,1),(-1,1)),
+    ]))
+    story.append(title_block)
+
+    # 資訊列
+    info_bar = Table([[
+        p(f"產生時間：{gen_at}", fontName=FN, fontSize=8, textColor=HEX("#555")),
+        p(f"資料筆數：{summary.get('total_rows',0):,}", fontName=FN, fontSize=8, textColor=HEX("#555")),
+        p(f"券商 OK {summary.get('brokers_ok',0)} / FAIL {summary.get('brokers_fail',0)}",
+          fontName=FN, fontSize=8, textColor=HEX("#555")),
+        p(f"AI 模型：{summary.get('ai_provider','')} {summary.get('ai_model','')}",
+          fontName=FN, fontSize=8, textColor=HEX("#555")),
+    ]], colWidths=[CW*0.36, CW*0.20, CW*0.22, CW*0.22])
+    info_bar.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0),(-1,-1), HEX("#EAF0F6")),
+        ("TOPPADDING",   (0,0),(-1,-1), 5),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 5),
+        ("LEFTPADDING",  (0,0),(-1,-1), 8),
+        ("LINEABOVE",    (0,0),(-1,0),  1, C["blue2"]),
+        ("LINEBELOW",    (0,0),(-1,-1), 0.5, C["border"]),
+        ("INNERGRID",    (0,0),(-1,-1), 0.3, C["border"]),
+    ]))
+    story.append(info_bar)
+    story.append(Spacer(1, 4*mm))
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  一、大盤環境速覽
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    story += sec_bar("一、大盤環境速覽", C["navy"], C["blue2"])
+
+    # 大盤指數
+    if taiex:
+        story += sub_hdr("■ 大盤指數 ＋ 成交量（近 6 日）")
+        amts = [d.get("amount_billion", 0) for d in taiex]
+        avg5 = sum(amts[1:6]) / max(len(amts[1:6]), 1) if len(amts) > 1 else 0
+        hdr  = [p("日期",FNB,8,textColor=C["white"]),
+                p("收盤指數",FNB,8,textColor=C["white"]),
+                p("漲跌點",FNB,8,textColor=C["white"]),
+                p("成交金額(億)",FNB,8,textColor=C["white"]),
+                p("量比(5日均)",FNB,8,textColor=C["white"])]
+        rows = [hdr]
+        for i, d in enumerate(taiex[:6]):
+            chg  = d.get("change", 0)
+            cls  = d.get("close", 0)
+            amt  = d.get("amount_billion", 0)
+            sign = "+" if chg > 0 else ""
+            chg_s = f"{sign}{chg:,.2f}" if isinstance(chg, float) else f"{sign}{chg}"
+            ratio = f"{amt/avg5:.2f}x" if avg5 > 0 else "—"
+            date_s = _fmt_date(d.get("date",""))
+            rows.append([
+                p("<b>" + date_s + "</b>" if i==0 else date_s, fontName=FNB if i==0 else FN, fontSize=8),
+                p(f"{cls:,.2f}" if isinstance(cls,float) else str(cls), fontName=FNB if i==0 else FN, fontSize=8),
+                pv(chg_s, bold=(i==0)),
+                p(f"{int(amt):,}", fontName=FN, fontSize=8),
+                p(ratio, fontName=FNB if i==0 else FN, fontSize=8),
+            ])
+        tbl = Table(rows, colWidths=[CW*0.18, CW*0.20, CW*0.18, CW*0.22, CW*0.22])
+        ts  = ts_base(C["blue2"])
+        today_row(ts)
+        ts += [("ALIGN",(1,0),(-1,-1),"RIGHT")]
+        tbl.setStyle(TableStyle(ts))
+        story.append(tbl)
+
+    # 三大法人
+    if inst:
+        story += sub_hdr("■ 三大法人買賣超（元，近 6 日）")
+        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+               ["日期","外資買賣超","投信買賣超","自營買賣超","三大合計"]]
+        rows = [hdr]
+        for i, d in enumerate(inst[:6]):
+            fg  = d["foreign"]["net"]
+            tr  = d["trust"]["net"]
+            dl  = d["dealer"]["net"]
+            tot = d.get("total_net", fg+tr+dl)
+            date_s = _fmt_date(d["date"])
+            rows.append([
+                p("<b>" + date_s + "</b>" if i==0 else date_s,
+                  fontName=FNB if i==0 else FN, fontSize=8),
+                pv(_fb(fg), bold=(i==0)), pv(_fb(tr), bold=(i==0)),
+                pv(_fb(dl), bold=(i==0)), pv(_fb(tot), bold=True),
+            ])
+        tbl = Table(rows, colWidths=[CW*0.18]+[CW*0.205]*4)
+        ts  = ts_base(C["blue"])
+        today_row(ts)
+        ts += [("ALIGN",(1,0),(-1,-1),"RIGHT"),
+               ("LINEAFTER",(3,1),(3,-1),0.8,C["border"]),
+               ("FONTNAME",(-1,1),(-1,-1),FNB)]  # 合計欄加粗
+        tbl.setStyle(TableStyle(ts))
+        story.append(tbl)
+
+    # 期貨
+    if futures:
+        story += sub_hdr("■ 期貨三大法人台指期淨部位（口，近 6 日）")
+        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+               ["日期","外資淨口數","投信淨口數","自營淨口數"]]
+        rows = [hdr]
+        for i, d in enumerate(futures[:6]):
+            fg = d.get("foreign_net_oi", 0)
+            tr = d.get("trust_net_oi", 0)
+            dl = d.get("dealer_net_oi", 0)
+            rows.append([
+                p(_fmt_date(d.get("date","")), fontName=FNB if i==0 else FN, fontSize=8),
+                pv(_fbi(fg), bold=(i==0)), pv(_fbi(tr), bold=(i==0)), pv(_fbi(dl), bold=(i==0)),
+            ])
+        tbl = Table(rows, colWidths=[CW*0.22]+[CW*0.26]*3)
+        ts  = ts_base(C["purple"])
+        today_row(ts)
+        ts += [("ALIGN",(1,0),(-1,-1),"RIGHT")]
+        tbl.setStyle(TableStyle(ts))
+        story.append(tbl)
+        note = p("＊ 正值=淨多單（看漲）｜負值=淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0",
+                 fontName=FN, fontSize=7, textColor=HEX("#888"))
+        story += [Spacer(1,1*mm), note]
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  二、外資分點明細
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if top_p:
+        story += sec_bar(f"二、外資分點明細（淨超 Top {len(top_p)} 家）", C["navy"], C["blue2"])
+        MEDALS = {1:"1.", 2:"2.", 3:"3."}
+        for rank, block in enumerate(top_p, 1):
+            broker    = block.get("broker","")
+            total_net = block.get("total_net",0)
+            rows_r    = block.get("rows") or []
+            medal     = MEDALS.get(rank, f"{rank}.")
+            nc        = hex_of(vc(total_net))
+
+            # 券商 header bar
+            broker_bar = Table([[
+                p(f"{medal}  {broker}", fontName=FNB, fontSize=10, textColor=C["white"]),
+                p(f'總淨超 <font color="{nc}"><b>{_fi(total_net)}</b></font> 張',
+                  fontName=FN, fontSize=9, textColor=C["white"]),
+            ]], colWidths=[CW*0.65, CW*0.35])
+            broker_bar.setStyle(TableStyle([
+                ("BACKGROUND",   (0,0),(-1,-1), C["gray"]),
+                ("TOPPADDING",   (0,0),(-1,-1), 6),
+                ("BOTTOMPADDING",(0,0),(-1,-1), 6),
+                ("LEFTPADDING",  (0,0),(-1,-1), 10),
+                ("RIGHTPADDING", (0,0),(-1,-1), 10),
+                ("ALIGN",        (1,0),(-1,-1), "RIGHT"),
+                ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
+                ("LINEBELOW",    (0,0),(-1,-1), 1.5, C["blue2"]),
+            ]))
+
+            if not rows_r:
+                story += [Spacer(1,2*mm), broker_bar]
+                continue
+
+            hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+                   ["#","代號  股票名稱","淨超(張)","區間均價","現　　價","乖離率"]]
+            tbl_data = [hdr]
+            for j, r in enumerate(rows_r[:5], 1):
+                bias_raw = str(r.get("bias","")).replace("%","").strip()
+                try:
+                    bv = float(bias_raw)
+                    if bv > 5:    bc = hex_of(C["red2"])
+                    elif bv > 1:  bc = hex_of(C["pos"])
+                    elif bv < -5: bc = hex_of(C["green"])
+                    elif bv < -1: bc = hex_of(C["neg"])
+                    else:         bc = "#555555"
+                    bias_p = p(f'<font color="{bc}"><b>{r.get("bias","")}</b></font>',
+                               fontName=FN, fontSize=8)
+                except Exception:
+                    bias_p = p(str(r.get("bias","")), fontName=FN, fontSize=8)
+
+                nv = r.get("net", 0)
+                tbl_data.append([
+                    p(str(j), fontName=FN, fontSize=8),
+                    p(f'<b>{r.get("sid","")}</b>  {r.get("name","")}',
+                      fontName=FN, fontSize=8),
+                    pv(_fi(nv), bold=True),
+                    p(str(r.get("avg","")), fontName=FN, fontSize=8),
+                    p(f'<b>{r.get("price","")}</b>', fontName=FNB, fontSize=8),
+                    bias_p,
+                ])
+            tbl = Table(tbl_data, colWidths=[
+                CW*0.05, CW*0.31, CW*0.14, CW*0.16, CW*0.16, CW*0.18
+            ])
+            ts = ts_base(HEX("#1A252F"))
+            ts += [("ALIGN",(0,0),(0,-1),"CENTER"),
+                   ("ALIGN",(2,0),(-1,-1),"RIGHT")]
+            tbl.setStyle(TableStyle(ts))
+            story += [Spacer(1,3*mm),
+                      KeepTogether([broker_bar, tbl])]
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  三、千張大戶
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if tdcc:
+        story += sec_bar("三、千張大戶持股比例", C["teal"], C["teal2"],
+                         "集保中心資料｜法人籌碼集中度")
+        story.append(Spacer(1, 2*mm))
+        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+               ["股票代號","千張以上人數","持股比例","400~999張人數","400~999張佔比"]]
+        tbl_data = [hdr]
+        for d in tdcc:
+            pct = d.get("pct_1000_plus", 0)
+            pc  = hex_of(C["red2"] if pct>=60 else C["neg"] if pct<40 else HEX("#E67E22"))
+            tbl_data.append([
+                p(f'<b>{d.get("stock_id","")}</b>', fontName=FNB, fontSize=8),
+                p(_fi(d.get("holders_1000_plus",0)), fontName=FN, fontSize=8),
+                p(f'<font color="{pc}"><b>{pct:.1f}%</b></font>', fontName=FN, fontSize=8),
+                p(_fi(d.get("holders_400_999",0)) if d.get("holders_400_999") else "—",
+                  fontName=FN, fontSize=8),
+                p(f'{d.get("pct_400_999",0):.1f}%' if d.get("pct_400_999") else "—",
+                  fontName=FN, fontSize=8),
+            ])
+        tbl = Table(tbl_data, colWidths=[CW*0.18]+[CW*0.205]*4)
+        ts = ts_base(C["teal"])
+        ts += [("ALIGN",(1,0),(-1,-1),"RIGHT")]
+        tbl.setStyle(TableStyle(ts))
+        story.append(tbl)
+        story.append(p("＊ 千張大戶持股 >60% = 籌碼高度集中（支撐強）｜<40% = 籌碼分散（浮額多）",
+                       fontName=FN, fontSize=7, textColor=HEX("#888")))
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  四、AI 深度分析
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    SEC_CFG = {
+        "A": (C["blue"],   C["blue2"],   "A）大盤籌碼環境研判"),
+        "B": (C["gold"],   C["gold2"],   "B）外資力量深度剖析"),
+        "C": (C["green"],  C["green2"],  "C）明日觀察清單"),
+        "D": (C["red"],    C["red2"],    "D）風控與資金配置"),
+        "E": (C["purple"], C["purple2"], "E）一句話摘要"),
+        "F": (C["blue"],   C["blue2"],   "F）外資交叉比對亮點"),
+    }
+
+    if ai_text:
+        story.append(PageBreak())
+        story += sec_bar("四、AI 深度分析（完整版）", C["navy"], C["blue2"],
+                         f'{summary.get("ai_provider","")} {summary.get("ai_model","")}  |  '
+                         f'{summary.get("ai_analyzer_version","")}')
+        story.append(Spacer(1, 2*mm))
+
+        cur_letter = None
+        in_sec     = False
+
+        for line in ai_text.split("\n"):
+            s = line.strip()
+            if not s:
+                continue
+
+            # A)~F) Section header
+            hm = re.match(r'^([A-F])\s*[)）:：]\s*(.*)', s)
+            if hm:
+                letter    = hm.group(1)
+                ai_title  = hm.group(2).strip().rstrip("：:").strip()
+                cur_letter = letter
+                bg, acc, default_lbl = SEC_CFG.get(letter, (C["blue"], C["blue2"], f"{letter}）"))
+                lbl = f"{letter}）{ai_title}" if ai_title else default_lbl
+
+                # E) 摘要：特大字體
+                if letter == "E":
+                    summary_txt = ai_title
+                    sec_tbl = Table([[
+                        p(lbl, fontName=FNB, fontSize=11, leading=16, textColor=C["white"]),
+                    ]], colWidths=[CW])
+                    sec_tbl.setStyle(TableStyle([
+                        ("BACKGROUND",   (0,0),(-1,-1), bg),
+                        ("LEFTPADDING",  (0,0),(-1,-1), 14),
+                        ("TOPPADDING",   (0,0),(-1,-1), 8),
+                        ("BOTTOMPADDING",(0,0),(-1,-1), 8),
+                        ("LINEAFTER",    (0,0),(0,-1),  4, acc),
+                    ]))
+                    story += [Spacer(1,4*mm), sec_tbl]
+                    if summary_txt:
+                        story.append(p(
+                            re.sub(r'\*\*(.+?)\*\*', r'\1', summary_txt),
+                            fontName=FNB, fontSize=10.5, leading=16,
+                            textColor=C["purple2"],
+                            spaceBefore=4, spaceAfter=4, leftIndent=8,
+                        ))
+                    in_sec = True
+                    continue
+
+                sec_tbl = Table([[
+                    p(lbl, fontName=FNB, fontSize=10.5, leading=15, textColor=C["white"]),
+                ]], colWidths=[CW])
+                sec_tbl.setStyle(TableStyle([
+                    ("BACKGROUND",   (0,0),(-1,-1), bg),
+                    ("LEFTPADDING",  (0,0),(-1,-1), 14),
+                    ("TOPPADDING",   (0,0),(-1,-1), 7),
+                    ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                    ("LINEAFTER",    (0,0),(0,-1),  4, acc),
+                ]))
+                story += [Spacer(1,4*mm), sec_tbl, Spacer(1,1.5*mm)]
+                in_sec = True
+                continue
+
+            # E) 下面的行（摘要文字）
+            if cur_letter == "E":
+                txt = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+                story.append(p(txt, fontName=FNB, fontSize=10, leading=15,
+                               textColor=C["purple2"],
+                               spaceBefore=2, spaceAfter=2, leftIndent=8))
+                continue
+
+            # 前言（無區段）
+            if not in_sec:
+                txt = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+                story.append(p(txt, fontName=FN, fontSize=8.5, leading=13,
+                               textColor=HEX("#666")))
+                continue
+
+            # 編號項目 1) 2) 3)
+            nm = re.match(r'^(\d+)\s*[)）.]\s*(.*)', s)
+            if nm:
+                num, txt = nm.group(1), nm.group(2)
+                txt = re.sub(r'\*\*(.+?)\*\*', r'\1', txt)
+                bg_cfg = SEC_CFG.get(cur_letter, (C["blue"], C["blue2"], ""))
+                lt_bg  = {
+                    "A": "#EBF5FB", "B": "#FEF9E7", "C": "#EAFAF1",
+                    "D": "#FDEDEC", "E": "#F4ECF7", "F": "#EAF2FB",
+                }.get(cur_letter, "#F8F9FA")
+                num_c  = hex_of(bg_cfg[1])
+
+                item_row = Table([[
+                    p(f'<font color="{num_c}"><b>{num}</b></font>',
+                      fontName=FNB, fontSize=9),
+                    p(txt, fontName=FN, fontSize=8.5, leading=13),
+                ]], colWidths=[8*mm, CW - 8*mm])
+                item_row.setStyle(TableStyle([
+                    ("BACKGROUND",   (0,0),(-1,-1), HEX(lt_bg)),
+                    ("TOPPADDING",   (0,0),(-1,-1), 4),
+                    ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+                    ("LEFTPADDING",  (0,0),(0,-1),  8),
+                    ("LEFTPADDING",  (1,0),(1,-1),  4),
+                    ("RIGHTPADDING", (0,0),(-1,-1), 6),
+                    ("VALIGN",       (0,0),(-1,-1), "TOP"),
+                    ("LINEBELOW",    (0,0),(-1,-1), 0.3, C["border"]),
+                ]))
+                story += [Spacer(1,1*mm), item_row]
+                continue
+
+            # 子項目 - / • / *
+            sm = re.match(r'^[-•\*＊]\s*(.*)', s)
+            if sm:
+                txt = re.sub(r'\*\*(.+?)\*\*', r'\1', sm.group(1))
+                story.append(p(f"• {txt}", fontName=FN, fontSize=8,
+                               leading=12, textColor=HEX("#444"),
+                               leftIndent=16, spaceBefore=1, spaceAfter=1))
+                continue
+
+            # 一般文字
+            txt = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+            story.append(p(txt, fontName=FN, fontSize=8.5, leading=13,
+                           textColor=HEX("#333"),
+                           leftIndent=4, spaceBefore=2, spaceAfter=2))
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  免責聲明
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    story.append(Spacer(1, 8*mm))
+    story.append(HRFlowable(width="100%", thickness=0.8,
+                            color=C["gold2"], spaceAfter=3*mm))
+    disc_tbl = Table([[
+        p("【免責聲明】帶進帶出是違法的行為，此資料皆為網上根據盤後資訊大數據所取得訊息，"
+          "非作為或被視為買進或售出標的的邀請或意象，請自行依據取得資訊評估風險與獲利，"
+          "有賺有賠請斟酌。",
+          fontName=FN, fontSize=7.5, leading=12, textColor=HEX("#7D5A00")),
+    ]], colWidths=[CW])
+    disc_tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0,0),(-1,-1), HEX("#FFF9E6")),
+        ("TOPPADDING",   (0,0),(-1,-1), 6),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 6),
+        ("LEFTPADDING",  (0,0),(-1,-1), 10),
+        ("RIGHTPADDING", (0,0),(-1,-1), 10),
+        ("BOX",          (0,0),(-1,-1), 0.5, HEX("#F0D060")),
+    ]))
+    story.append(disc_tbl)
+
+    doc.build(story)
+    print(f"[OK] Analysis PDF: {pdf_path}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  SMTP 發送
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 
 def _safe_int_env(name, default):
     v = (os.environ.get(name, "") or "").strip()
@@ -1032,6 +1681,14 @@ def main():
     xlsx = pick_latest(os.path.join("output", "IKE_Report_*.xlsx"))
     pdf  = pick_latest(os.path.join("output", "IKE_Report_*.pdf"))
 
+    # ── 產生分析報告 PDF ──────────────────────────────
+    analysis_pdf_path = os.path.join("output", f"IKE_Analysis_{datetime.now(TZ).strftime('%Y%m%d')}.pdf")
+    try:
+        build_analysis_pdf(summary, analysis_pdf_path)
+    except Exception as e:
+        print(f"[WARN] 分析 PDF 產生失敗（仍繼續寄信）: {e}")
+        analysis_pdf_path = None
+
     msg             = EmailMessage()
     msg["From"]     = mail_from
     msg["To"]       = mail_to
@@ -1043,8 +1700,9 @@ def main():
     msg.add_alternative(build_html(summary), subtype="html")
 
     for fpath, mime in [
-        (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        (pdf,  "application/pdf"),
+        (xlsx,             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        (pdf,              "application/pdf"),
+        (analysis_pdf_path,"application/pdf"),
     ]:
         if fpath and os.path.exists(fpath):
             with open(fpath, "rb") as f:
