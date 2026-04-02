@@ -821,8 +821,7 @@ def build_html(summary: dict) -> str:
     if inst:
         p.append(_render_institutional(inst))
 
-    if margin:
-        p.append(_render_margin(margin))
+    # 融資融券已移除（數據抓取不穩定，移除顯示）
 
     if futures:
         p.append(_render_futures(futures))
