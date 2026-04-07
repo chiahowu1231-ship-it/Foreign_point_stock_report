@@ -1127,6 +1127,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         return [
             ("BACKGROUND",   (0,0),(-1,0),   hdr_bg),
             ("TEXTCOLOR",    (0,0),(-1,0),   C["white"]),
+            ("TEXTCOLOR",    (0,1),(-1,-1),  HEX("#222222")),  # 資料列強制深色
             ("FONTNAME",     (0,0),(-1,0),   FNB),
             ("FONTNAME",     (0,1),(-1,-1),  FN),
             ("FONTSIZE",     (0,0),(-1,-1),  8),
@@ -1153,7 +1154,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         """回傳 [accent_bar_tbl, title_tbl] flowable list"""
         # 左側 3pt 色塊 + 標題文字
         inner = [
-            p(label, fontName=FNB, fontSize=11.5, leading=16,
+            p(label, fontName=FNB, fontSize=13, leading=18,
               textColor=C["white"]),
         ]
         if subtitle:
@@ -1168,11 +1169,11 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
             ("BOTTOMPADDING",(0,0),(-1,-1), 7),
             ("LINEAFTER",    (0,0),(0,-1),  4, accent),  # 左邊色條
         ]))
-        return [Spacer(1, 5*mm), title_tbl]
+        return [Spacer(1, 3.5*mm), title_tbl, Spacer(1, 1.5*mm)]
 
     # ─── 子標題（表格前） ────────────────────────────
     def sub_hdr(label: str) -> list:
-        tbl = Table([[p(label, fontName=FNB, fontSize=9,
+        tbl = Table([[p(label, fontName=FNB, fontSize=9.5,
                         textColor=C["blue2"])]],
                     colWidths=[CW])
         tbl.setStyle(TableStyle([
@@ -1181,7 +1182,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
             ("BOTTOMPADDING",(0,0),(-1,-1), 3),
             ("LEFTPADDING",(0,0),(-1,-1), 2),
         ]))
-        return [Spacer(1, 3*mm), tbl, Spacer(1, 1.5*mm)]
+        return [Spacer(1, 2.5*mm), tbl, Spacer(1, 1*mm)]
 
     # ─── Page template（每頁頁首頁尾） ───────────────
     report_date = datetime.now(TZ).strftime("%Y-%m-%d")
@@ -1307,11 +1308,11 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         story += sub_hdr("■ 大盤指數 ＋ 成交量（近 6 日）")
         amts = [d.get("amount_billion", 0) for d in taiex]
         avg5 = sum(amts[1:6]) / max(len(amts[1:6]), 1) if len(amts) > 1 else 0
-        hdr  = [p("日期",FNB,8,textColor=C["white"]),
-                p("收盤指數",FNB,8,textColor=C["white"]),
-                p("漲跌點",FNB,8,textColor=C["white"]),
-                p("成交金額(億)",FNB,8,textColor=C["white"]),
-                p("量比(5日均)",FNB,8,textColor=C["white"])]
+        hdr  = [p("日期", fontName=FNB, fontSize=8, textColor=C["white"]),
+                p("收盤指數", fontName=FNB, fontSize=8, textColor=C["white"]),
+                p("漲跌點", fontName=FNB, fontSize=8, textColor=C["white"]),
+                p("成交金額(億)", fontName=FNB, fontSize=8, textColor=C["white"]),
+                p("量比(5日均)", fontName=FNB, fontSize=8, textColor=C["white"])]
         rows = [hdr]
         for i, d in enumerate(taiex[:6]):
             chg  = d.get("change", 0)
@@ -1338,7 +1339,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
     # 三大法人
     if inst:
         story += sub_hdr("■ 三大法人買賣超（元，近 6 日）")
-        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+        hdr = [p(t, fontName=FNB, fontSize=8, textColor=C["white"]) for t in
                ["日期","外資買賣超","投信買賣超","自營買賣超","三大合計"]]
         rows = [hdr]
         for i, d in enumerate(inst[:6]):
@@ -1365,7 +1366,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
     # 期貨
     if futures:
         story += sub_hdr("■ 期貨三大法人台指期淨部位（口，近 6 日）")
-        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+        hdr = [p(t, fontName=FNB, fontSize=8, textColor=C["white"]) for t in
                ["日期","外資淨口數","投信淨口數","自營淨口數"]]
         rows = [hdr]
         for i, d in enumerate(futures[:6]):
@@ -1401,26 +1402,29 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
 
             # 券商 header bar
             broker_bar = Table([[
-                p(f"{medal}  {broker}", fontName=FNB, fontSize=10, textColor=C["white"]),
+                p(f"{medal}  {broker}", fontName=FNB, fontSize=10.5,
+                  leading=15, textColor=C["white"]),
                 p(f'總淨超 <font color="{nc}"><b>{_fi(total_net)}</b></font> 張',
                   fontName=FN, fontSize=9, textColor=C["white"]),
             ]], colWidths=[CW*0.65, CW*0.35])
             broker_bar.setStyle(TableStyle([
-                ("BACKGROUND",   (0,0),(-1,-1), C["gray"]),
-                ("TOPPADDING",   (0,0),(-1,-1), 6),
-                ("BOTTOMPADDING",(0,0),(-1,-1), 6),
-                ("LEFTPADDING",  (0,0),(-1,-1), 10),
-                ("RIGHTPADDING", (0,0),(-1,-1), 10),
+                ("BACKGROUND",   (0,0),(-1,-1), C["blue"]),   # 深藍底
+                ("TEXTCOLOR",    (0,0),(-1,-1), C["white"]),  # 強制白字（兜底）
+                ("TOPPADDING",   (0,0),(-1,-1), 7),
+                ("BOTTOMPADDING",(0,0),(-1,-1), 7),
+                ("LEFTPADDING",  (0,0),(-1,-1), 12),
+                ("RIGHTPADDING", (0,0),(-1,-1), 12),
                 ("ALIGN",        (1,0),(-1,-1), "RIGHT"),
                 ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
-                ("LINEBELOW",    (0,0),(-1,-1), 1.5, C["blue2"]),
+                ("LINEABOVE",    (0,0),(-1,-1), 2.5, C["blue2"]),  # 上方亮藍條
+                ("LINEBELOW",    (0,0),(-1,-1), 0.5, C["border"]),
             ]))
 
             if not rows_r:
                 story += [Spacer(1,2*mm), broker_bar]
                 continue
 
-            hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+            hdr = [p(t, fontName=FNB, fontSize=8, textColor=C["white"]) for t in
                    ["#","代號  股票名稱","淨超(張)","區間均價","現　　價","乖離率"]]
             tbl_data = [hdr]
             for j, r in enumerate(rows_r[:5], 1):
@@ -1440,8 +1444,8 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
                 nv = r.get("net", 0)
                 tbl_data.append([
                     p(str(j), fontName=FN, fontSize=8),
-                    p(f'<b>{r.get("sid","")}</b>  {r.get("name","")}',
-                      fontName=FN, fontSize=8),
+                    p(f'<font color="#1A3A5C"><b>{r.get("sid","")}</b></font>  {r.get("name","")}',
+                      fontName=FN, fontSize=8, textColor=HEX("#222222")),
                     pv(_fi(nv), bold=True),
                     p(str(r.get("avg","")), fontName=FN, fontSize=8),
                     p(f'<b>{r.get("price","")}</b>', fontName=FNB, fontSize=8),
@@ -1464,7 +1468,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         story += sec_bar("三、千張大戶持股比例", C["teal"], C["teal2"],
                          "集保中心資料｜法人籌碼集中度")
         story.append(Spacer(1, 2*mm))
-        hdr = [p(t,FNB,8,textColor=C["white"]) for t in
+        hdr = [p(t, fontName=FNB, fontSize=8, textColor=C["white"]) for t in
                ["股票代號","千張以上人數","持股比例","400~999張人數","400~999張佔比"]]
         tbl_data = [hdr]
         for d in tdcc:
@@ -1536,7 +1540,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
                         ("BOTTOMPADDING",(0,0),(-1,-1), 8),
                         ("LINEAFTER",    (0,0),(0,-1),  4, acc),
                     ]))
-                    story += [Spacer(1,4*mm), sec_tbl]
+                    story += [Spacer(1,3.5*mm), sec_tbl]
                     if summary_txt:
                         story.append(p(
                             re.sub(r'\*\*(.+?)\*\*', r'\1', summary_txt),
@@ -1548,7 +1552,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
                     continue
 
                 sec_tbl = Table([[
-                    p(lbl, fontName=FNB, fontSize=10.5, leading=15, textColor=C["white"]),
+                    p(lbl, fontName=FNB, fontSize=11, leading=16, textColor=C["white"]),
                 ]], colWidths=[CW])
                 sec_tbl.setStyle(TableStyle([
                     ("BACKGROUND",   (0,0),(-1,-1), bg),
@@ -1557,7 +1561,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
                     ("BOTTOMPADDING",(0,0),(-1,-1), 7),
                     ("LINEAFTER",    (0,0),(0,-1),  4, acc),
                 ]))
-                story += [Spacer(1,4*mm), sec_tbl, Spacer(1,1.5*mm)]
+                story += [Spacer(1,3.5*mm), sec_tbl, Spacer(1,1*mm)]
                 in_sec = True
                 continue
 
@@ -1603,7 +1607,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
                     ("VALIGN",       (0,0),(-1,-1), "TOP"),
                     ("LINEBELOW",    (0,0),(-1,-1), 0.3, C["border"]),
                 ]))
-                story += [Spacer(1,1*mm), item_row]
+                story += [Spacer(1,0.5*mm), item_row]
                 continue
 
             # 子項目 - / • / *
