@@ -165,13 +165,12 @@ def build_prompt(summary: dict) -> str:
     lines.append("")
 
     # A) 大盤環境
-    lines.append("A) 大盤籌碼環境研判（5~7 點）：")
+    lines.append("A) 大盤籌碼環境研判（4~6 點）：")
     lines.append("   每一點必須包含：具體數據 → 推論 → 操作意涵。")
     lines.append("   必須涵蓋以下面向：")
     lines.append("   - 外資現貨動向：近5日買賣超趨勢（連買/連賣/轉折），計算5日累計金額")
     lines.append("   - 投信/自營商動向：是否與外資同向？若背離代表什麼？")
     lines.append("   - 成交量分析：今日量能 vs 5日均量（放量/縮量/爆量倍率），量價配合度")
-    lines.append("   - 融資融券解讀：融資增減趨勢（散戶追漲程度）、券資比變化、軋空可能性")
     lines.append("   - 期貨籌碼：外資台指期淨部位方向與變化幅度，多空轉折訊號")
     lines.append("   - 多空結論：綜合以上，明確給出『偏多/中性/偏空』判斷及信心程度（高/中/低）")
     lines.append("")

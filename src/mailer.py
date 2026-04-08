@@ -174,8 +174,8 @@ def _sec_hdr(icon: str, title: str, color_key: str = "blue", subtitle: str = "")
     )
     return (
         f'<div style="margin:22px 0 0;padding:10px 16px;'
-        f'background:linear-gradient(90deg,{c["bg"]},{c["hdr"]});'
-        f'border-radius:5px 5px 0 0;border-left:4px solid rgba(255,255,255,.35);">'
+        f'background:{c["bg"]};'
+        f'border-radius:5px 5px 0 0;border-left:5px solid {c["hdr"]};">'
         f'<span style="font-size:13.5px;font-weight:700;color:#fff;letter-spacing:.5px;">'
         f'{icon}&nbsp; {_esc(title)}</span>{sub_html}</div>'
     )
@@ -197,7 +197,7 @@ def _table_open(col_styles: list = None) -> str:
 TABLE_CLOSE = "</table>"
 
 
-def _th_row(*cols, bg: str = "#2C3E50", color: str = "#ECF0F1") -> str:
+def _th_row(*cols, bg: str = "#2C3E50", color: str = "#FFFFFF") -> str:
     """表頭列 — cols = (label, align) tuples"""
     cells = "".join(
         f'<th style="padding:7px 11px;text-align:{align};background:{bg};'
@@ -215,7 +215,7 @@ def _td(text, align="left", bold=False, color="", extra="", border=True) -> str:
     br = "border-right:1px solid #EAECEE;" if border else ""
     bt = "border-top:1px solid #EAECEE;"
     return (
-        f'<td style="padding:6px 11px;text-align:{align};{bt}{br}{b}{c}{extra}">'
+        f'<td style="padding:6px 11px;text-align:{align};color:#1A1A1A;{bt}{br}{b}{c}{extra}">'
         f'{text}</td>'
     )
 
@@ -475,15 +475,15 @@ def _render_broker_block(block: dict, rank: int) -> str:
     net_badge_bg = "#C0392B" if total_net > 0 else "#27AE60" if total_net < 0 else "#888"
     header = (
         f'<div style="margin:12px 0 0;padding:9px 14px;'
-        f'background:linear-gradient(90deg,#2C3E50,#34495E);'
+        f'background:#1A2A3A;'
         f'border-radius:5px 5px 0 0;'
         f'display:flex;align-items:center;justify-content:space-between;">'
-        f'<span style="font-size:14px;font-weight:700;color:#ECF0F1;">'
+        f'<span style="font-size:14px;font-weight:700;color:#FFFFFF;">'
         f'{medal}&nbsp; {broker}</span>'
         f'<span style="font-size:12px;">'
-        f'<span style="color:#AAB7B8;">總淨超&nbsp;</span>'
+        f'<span style="color:#D5E8F5;">總淨超&nbsp;</span>'
         f'<span style="color:{nc};font-weight:800;font-size:14px;">{_fi(total_net)}</span>'
-        f'<span style="color:#AAB7B8;font-size:11px;">&nbsp;張</span>'
+        f'<span style="color:#D5E8F5;font-size:11px;">&nbsp;張</span>'
         f'</span></div>'
     )
 
@@ -585,12 +585,12 @@ def _format_ai_html(ai_text: str) -> str:
         return _style_keywords(_md_inline(_esc(raw)))
 
     def _num_badge(num: str, color: str, shape: str = "circle") -> str:
-        radius = "50%" if shape == "circle" else "4px"
+        radius = "50%" if shape == "circle" else "3px"
         return (
-            f'<span style="display:inline-block;min-width:22px;height:22px;'
+            f'<span style="display:inline-block;min-width:18px;height:18px;'
             f'background:{color};color:#fff;border-radius:{radius};text-align:center;'
-            f'line-height:22px;font-size:12px;font-weight:700;margin-right:9px;'
-            f'vertical-align:middle;">{num}</span>'
+            f'line-height:18px;font-size:10px;font-weight:700;margin-right:8px;'
+            f'vertical-align:middle;opacity:0.85;">{num}</span>'
         )
 
     for line in lines:
@@ -618,7 +618,7 @@ def _format_ai_html(ai_text: str) -> str:
                 html.append(
                     f'<div style="margin:26px 0 4px;">'
                     # 全寬 banner
-                    f'<div style="background:linear-gradient(90deg,{st["header_bg"]},#9B59B6);'
+                    f'<div style="background:{st["header_bg"]};'
                     f'padding:11px 18px;border-radius:6px 6px 0 0;">'
                     f'<span style="font-size:15px;font-weight:800;color:#fff;letter-spacing:.5px;">'
                     f'{st["icon"]}&nbsp; E）{st["label"]}</span></div>'
@@ -677,10 +677,10 @@ def _format_ai_html(ai_text: str) -> str:
             if cur_letter == "B":
                 # 金色券商名稱卡片
                 html.append(
-                    f'<div style="margin:14px 0 4px;padding:10px 14px;'
-                    f'background:#FFFBEE;border:1px solid #E8C840;border-radius:5px;">'
+                    f'<div style="margin:10px 0 3px;padding:7px 12px;'
+                    f'background:#FFFBEE;border-left:3px solid #D4AC0D;border-radius:0 4px 4px 0;">'
                     + _num_badge(num, "#D4AC0D", "square")
-                    + f'<span style="font-weight:700;font-size:14px;color:#7D6608;'
+                    + f'<span style="font-weight:600;font-size:12.5px;color:#7D6608;'
                     f'vertical-align:middle;">{_pi(text)}</span></div>'
                 )
             elif cur_letter == "C":
@@ -688,42 +688,42 @@ def _format_ai_html(ai_text: str) -> str:
                 if stock_m:
                     sid, rest = stock_m.groups()
                     html.append(
-                        f'<div style="margin:12px 0 4px;padding:9px 14px;'
-                        f'background:#E8F8F5;border-left:4px solid #1ABC9C;border-radius:0 5px 5px 0;">'
+                        f'<div style="margin:8px 0 3px;padding:6px 12px;'
+                        f'background:#E8F8F5;border-left:3px solid #1ABC9C;border-radius:0 4px 4px 0;">'
                         + _num_badge(num, "#1ABC9C")
-                        + f'<span style="font-weight:800;font-size:14px;color:#0E6655;'
+                        + f'<span style="font-weight:700;font-size:12.5px;color:#0E6655;'
                         f'vertical-align:middle;">{_esc(sid)}&nbsp;</span>'
-                        f'<span style="font-weight:600;font-size:14px;vertical-align:middle;">'
+                        f'<span style="font-weight:500;font-size:12.5px;color:#333;vertical-align:middle;">'
                         f'{_pi(rest)}</span></div>'
                     )
                 else:
                     html.append(
-                        f'<div style="margin:10px 0 2px;padding:8px 14px;'
-                        f'background:#F0FBF8;border-left:3px solid #27AE60;border-radius:0 4px 4px 0;">'
+                        f'<div style="margin:6px 0 2px;padding:5px 10px 5px 8px;'
+                        f'border-left:2px solid #27AE60;border-radius:0 3px 3px 0;">'
                         + _num_badge(num, "#27AE60")
-                        + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
+                        + f'<span style="font-size:12.5px;color:#333;line-height:1.7;vertical-align:middle;">{_pi(text)}</span></div>'
                     )
             elif cur_letter == "D":
                 html.append(
-                    f'<div style="margin:8px 0;padding:9px 14px;'
-                    f'background:#FFF5F5;border-left:3px solid #E74C3C;border-radius:0 4px 4px 0;">'
+                    f'<div style="margin:6px 0;padding:5px 10px 5px 8px;'
+                    f'border-left:2px solid #E74C3C;border-radius:0 3px 3px 0;">'
                     + _num_badge(num, "#E74C3C")
-                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
+                    + f'<span style="font-size:12.5px;color:#333;line-height:1.7;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
             elif cur_letter == "F":
                 html.append(
-                    f'<div style="margin:10px 0 4px;padding:9px 14px;'
-                    f'background:#EAF2FB;border-left:3px solid #2471A3;border-radius:0 4px 4px 0;">'
+                    f'<div style="margin:6px 0 3px;padding:5px 10px 5px 8px;'
+                    f'border-left:2px solid #2471A3;border-radius:0 3px 3px 0;">'
                     + _num_badge(num, "#2471A3", "square")
-                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
+                    + f'<span style="font-size:12.5px;color:#333;line-height:1.7;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
             else:
-                # A 區（及預設）
+                # A 區（及預設）— 縮小字體，明顯低於 section banner
                 html.append(
-                    f'<div style="margin:8px 0;padding:7px 12px;'
-                    f'background:#F4F8FD;border-left:3px solid {accent};border-radius:0 4px 4px 0;">'
+                    f'<div style="margin:6px 0;padding:5px 10px 5px 8px;'
+                    f'border-left:2px solid {accent};border-radius:0 3px 3px 0;">'
                     + _num_badge(num, accent)
-                    + f'<span style="font-size:13.5px;vertical-align:middle;">{_pi(text)}</span></div>'
+                    + f'<span style="font-size:12.5px;color:#333;line-height:1.7;vertical-align:middle;">{_pi(text)}</span></div>'
                 )
             continue
 
@@ -768,7 +768,7 @@ def build_html(summary: dict) -> str:
     brk_fail = summary.get("brokers_fail", 0)
 
     p.append(
-        f'<div style="background:linear-gradient(135deg,#0F2744,#1A3A5C,#1F6FAB);'
+        f'<div style="background:#0F2744;border-bottom:3px solid #1F6FAB;'
         f'padding:22px 26px 18px;border-radius:8px 8px 0 0;">'
         f'<h1 style="margin:0 0 6px;font-size:22px;color:#fff;font-weight:800;'
         f'letter-spacing:.5px;">📈 外資分點狙擊分析</h1>'
