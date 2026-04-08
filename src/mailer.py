@@ -1283,9 +1283,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         p(f"資料筆數：{summary.get('total_rows',0):,}", fontName=FN, fontSize=8, textColor=HEX("#555")),
         p(f"券商 OK {summary.get('brokers_ok',0)} / FAIL {summary.get('brokers_fail',0)}",
           fontName=FN, fontSize=8, textColor=HEX("#555")),
-        p(f"AI 模型：{summary.get('ai_provider','')} {summary.get('ai_model','')}",
-          fontName=FN, fontSize=8, textColor=HEX("#555")),
-    ]], colWidths=[CW*0.36, CW*0.20, CW*0.22, CW*0.22])
+    ]], colWidths=[CW*0.45, CW*0.25, CW*0.30])
     info_bar.setStyle(TableStyle([
         ("BACKGROUND",   (0,0),(-1,-1), HEX("#EAF0F6")),
         ("TOPPADDING",   (0,0),(-1,-1), 5),
@@ -1505,9 +1503,7 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
 
     if ai_text:
         story.append(PageBreak())
-        story += sec_bar("四、AI 深度分析（完整版）", C["navy"], C["blue2"],
-                         f'{summary.get("ai_provider","")} {summary.get("ai_model","")}  |  '
-                         f'{summary.get("ai_analyzer_version","")}')
+        story += sec_bar("四、AI 深度分析（完整版）", C["navy"], C["blue2"])
         story.append(Spacer(1, 2*mm))
 
         cur_letter = None
@@ -1686,7 +1682,7 @@ def main():
     pdf  = pick_latest(os.path.join("output", "IKE_Report_*.pdf"))
 
     # ── 產生分析報告 PDF ──────────────────────────────
-    analysis_pdf_path = os.path.join("output", f"IKE_Analysis_{datetime.now(TZ).strftime('%Y%m%d')}.pdf")
+    analysis_pdf_path = os.path.join("output", f"TAIWAN外資分點狙擊分析報告_{datetime.now(TZ).strftime('%Y%m%d')}.pdf")
     try:
         build_analysis_pdf(summary, analysis_pdf_path)
     except Exception as e:
