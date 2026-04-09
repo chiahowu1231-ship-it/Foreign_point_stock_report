@@ -855,7 +855,7 @@ def format_market_context_for_prompt(market_data: dict) -> str:
     """
     lines = []
 
-    # ── 三大法人 ──
+    # ── 三大法人（每日 + 累計統計） ──
     inst = market_data.get("institutional") or []
     if inst:
         lines.append("【三大法人買賣超（近日，元）】")
@@ -868,6 +868,33 @@ def format_market_context_for_prompt(market_data: dict) -> str:
             lines.append(
                 f"  {date}｜外資 {_fmt(fg)}｜投信 {_fmt(tr)}｜自營 {_fmt(dl)}｜合計 {_fmt(total)}"
             )
+
+        # 累計統計（供 AI 直接引用，不必自行加總）
+        n = len(inst[:6])
+        cum_fg  = sum(d["foreign"]["net"]   for d in inst[:6])
+        cum_tr  = sum(d["trust"]["net"]     for d in inst[:6])
+        cum_dl  = sum(d["dealer"]["net"]    for d in inst[:6])
+        cum_tot = sum(d.get("total_net", 0) for d in inst[:6])
+        date_start = inst[min(n-1, 5)]["date"]
+        date_end   = inst[0]["date"]
+
+        def _trend(v):
+            return "連續淨買" if v > 0 else "連續淨賣" if v < 0 else "多空互見"
+
+        def _streak(key):
+            vals = [d[key]["net"] for d in inst[:6]]
+            return sum(1 for v in vals if v > 0), sum(1 for v in vals if v < 0)
+
+        fg_b, fg_s = _streak("foreign")
+        tr_b, tr_s = _streak("trust")
+        dl_b, dl_s = _streak("dealer")
+
+        lines.append("")
+        lines.append(f"【三大法人{n}日累計買賣超（{date_start}～{date_end}，元）】")
+        lines.append(f"  外資累計：{_fmt(cum_fg)}　買超{fg_b}日/賣超{fg_s}日　趨勢：{_trend(cum_fg)}")
+        lines.append(f"  投信累計：{_fmt(cum_tr)}　買超{tr_b}日/賣超{tr_s}日　趨勢：{_trend(cum_tr)}")
+        lines.append(f"  自營累計：{_fmt(cum_dl)}　買超{dl_b}日/賣超{dl_s}日　趨勢：{_trend(cum_dl)}")
+        lines.append(f"  三大合計：{_fmt(cum_tot)}")
         lines.append("")
 
     # ── 大盤指數 + 成交量 ──

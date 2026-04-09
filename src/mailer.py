@@ -286,7 +286,27 @@ def _render_taiex(taiex: list) -> str:
 def _render_institutional(inst: list) -> str:
     if not inst:
         return ""
-    hdr = _sec_hdr("🏦", "三大法人買賣超（元）", "blue", "近 6 日")
+    n = len(inst[:6])
+    # 累計加總
+    cum_fg  = sum(d["foreign"]["net"]   for d in inst[:6])
+    cum_tr  = sum(d["trust"]["net"]     for d in inst[:6])
+    cum_dl  = sum(d["dealer"]["net"]    for d in inst[:6])
+    cum_tot = sum(d.get("total_net", 0) for d in inst[:6])
+    date_start = _fmt_date(inst[min(n-1, 5)]["date"])
+    date_end   = _fmt_date(inst[0]["date"])
+
+    def _streak_badge(key):
+        vals  = [d[key]["net"] for d in inst[:6]]
+        b_cnt = sum(1 for v in vals if v > 0)
+        s_cnt = sum(1 for v in vals if v < 0)
+        if b_cnt > s_cnt:
+            return _badge(f"買超{b_cnt}日", "#C0392B")
+        elif s_cnt > b_cnt:
+            return _badge(f"賣超{s_cnt}日", "#27AE60")
+        else:
+            return _badge("多空互見", "#888")
+
+    hdr = _sec_hdr("🏦", "三大法人買賣超（元）", "blue", f"近 {n} 日　{date_start} ～ {date_end}")
     tbl = _table_open([("100px",""), ("110px",""), ("110px",""), ("110px",""), ("110px","")])
     tbl += _th_row(
         ("日期", "left"), ("外資買賣超", "right"), ("投信買賣超", "right"),
@@ -319,6 +339,38 @@ def _render_institutional(inst: list) -> str:
             ),
             bg=bg,
         )
+
+    # ── 累計統計列（分隔線 + 深色底） ──
+    def _cum_cell(v):
+        col = _color(v)
+        return _td(
+            f'<span style="color:{col};font-weight:800;font-size:12px;">{_fb(v)}</span>',
+            "right"
+        )
+
+    tbl += (
+        f'<tr style="background:#1F618D;">' +
+        _td(
+            f'<span style="color:#fff;font-weight:700;font-size:11.5px;">{n}日累計</span>',
+            bold=True, color="#fff", extra="border-top:2px solid #1A5276;"
+        ) +
+        _cum_cell(cum_fg) + _cum_cell(cum_tr) + _cum_cell(cum_dl) +
+        _td(
+            f'<span style="color:{"#FFCDD2" if cum_tot>0 else "#C8E6C9"};font-weight:800;font-size:12.5px;">{_fb(cum_tot)}</span>',
+            "right", extra="border-top:2px solid #1A5276;"
+        ) +
+        '</tr>'
+    )
+    # 趨勢說明列
+    fg_badge  = _streak_badge("foreign")
+    tr_badge  = _streak_badge("trust")
+    dl_badge  = _streak_badge("dealer")
+    tbl += (
+        f'<tr><td colspan="5" style="padding:5px 12px;background:#EBF5FB;'
+        f'border-top:1px solid #AED6F1;font-size:11.5px;color:#1A2A3A;">'
+        f'外資&nbsp;{fg_badge}&nbsp;&nbsp;投信&nbsp;{tr_badge}&nbsp;&nbsp;自營&nbsp;{dl_badge}'
+        f'</td></tr>'
+    )
     tbl += TABLE_CLOSE
     return hdr + tbl
 
