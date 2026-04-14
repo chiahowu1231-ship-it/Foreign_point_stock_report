@@ -32,6 +32,10 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
+# 全域 Session — 重用 TCP/TLS 連線，減少握手時間約 20~30%
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
 
 def _safe_int(s) -> int:
     """安全轉 int：處理逗號、空值、--"""
@@ -64,9 +68,14 @@ def _get_json(url: str, params: dict = None, retries: int = 3, timeout: int = 15
     """帶重試的 JSON GET（對 TWSE 回傳格式寬容）"""
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r = SESSION.get(url, params=params, timeout=timeout)
             if r.status_code == 200:
-                data = r.json()
+                try:
+                    data = r.json()
+                except (ValueError, requests.exceptions.JSONDecodeError):
+                    print(f"  [market_data] {url} 回傳非 JSON（可能被 WAF 阻擋），重試中...")
+                    time.sleep(1.0 + random.uniform(0, 0.5))
+                    continue
                 # TWSE 回傳可能是 {"stat":"OK","data":[...]} 或直接 {"data":[...]} 或 [...]
                 if isinstance(data, list):
                     return {"data": data}
@@ -84,7 +93,7 @@ def _get_html(url: str, params: dict = None, retries: int = 3, timeout: int = 15
     """帶重試的 HTML GET"""
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            r = SESSION.get(url, params=params, timeout=timeout)
             r.encoding = "utf-8"
             if r.status_code == 200 and r.text:
                 return r.text
@@ -92,6 +101,18 @@ def _get_html(url: str, params: dict = None, retries: int = 3, timeout: int = 15
             print(f"  [market_data] HTML {url} attempt {attempt+1}: {e}")
         time.sleep(1.0 + random.uniform(0, 0.5))
     return None
+
+
+def _start_delta() -> int:
+    """
+    決定歷史抓取的起始 delta（相對今天的天數偏移）。
+    若今天是交易日且現在時間早於 15:30（盤後資料尚未產出），
+    從 delta=1（昨天）開始，避免空跑今天的 API。
+    """
+    now = datetime.now(TZ)
+    is_weekday   = now.weekday() < 5          # 週一~五
+    before_close = now.hour < 15 or (now.hour == 15 and now.minute < 30)
+    return 1 if (is_weekday and before_close) else 0
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -112,9 +133,15 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
       row 5: 合計（= 三大法人合計）
     有時會有「自營商合計」「外資及陸資合計」等合計行。
     """
-    # ⚠️ Bug fix: TWSE BFI82U 正確參數是 "date"，不是 "dayDate"
-    url = "https://www.twse.com.tw/exchangeReport/BFI82U"
-    data = _get_json(url, params={"response": "json", "date": date_str})
+    # 1. 優先嘗試新版 RWD API（正確參數為 date）
+    url_new = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+    data = _get_json(url_new, params={"response": "json", "date": date_str, "type": "day"})
+
+    # 2. 若失敗，Fallback 舊版 API（正確參數必須為 dayDate）
+    if not data or not data.get("data"):
+        url_old = "https://www.twse.com.tw/exchangeReport/BFI82U"
+        data = _get_json(url_old, params={"response": "json", "dayDate": date_str, "type": "day"})
+
     if not data or not data.get("data"):
         return None
 
@@ -184,11 +211,10 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
 def fetch_institutional_history(days: int = 6) -> list:
     """抓取近 N 天的三大法人買賣超"""
     results = []
-    today = datetime.now(TZ)
+    today   = datetime.now(TZ)
+    start_d = _start_delta()   # 盤前空跑保護：盤中從昨天開始抓
 
-    # 往前多抓幾天（跳過假日）
-    checked = 0
-    for delta in range(days * 2 + 5):
+    for delta in range(start_d, start_d + days * 2 + 5):
         if len(results) >= days:
             break
         d = today - timedelta(days=delta)
@@ -277,7 +303,7 @@ def fetch_taiex_daily(days: int = 6) -> list:
             # 如果 _get_json 已經包裝了 list → {"data": [...]}
             if isinstance(data2, dict) and "data" not in data2:
                 # Open Data 可能直接返回 list，被 _get_json 包裝成 {"data": [...]}
-                rows2 = list(data2.values())[0] if data2 else []
+                rows2 = list(data2.values())[0] if data2 and len(data2) > 0 else []
             print(f"  [taiex] OpenData rows={len(rows2)}")
 
             for item in rows2:
@@ -401,7 +427,7 @@ def _margin_from_openapi(date_str: str) -> Optional[dict]:
     ym = date_str[:6] + "01"
     url = "https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        r = SESSION.get(url, timeout=15)
         r.raise_for_status()
         items = r.json()
         if not isinstance(items, list):
@@ -517,9 +543,10 @@ def fetch_margin_trading(date_str: str) -> Optional[dict]:
 def fetch_margin_history(days: int = 6) -> list:
     """抓取近 N 天的融資融券（三層 fallback）"""
     results = []
-    today = datetime.now(TZ)
+    today   = datetime.now(TZ)
+    start_d = _start_delta()
 
-    for delta in range(days * 2 + 5):
+    for delta in range(start_d, start_d + days * 2 + 5):
         if len(results) >= days:
             break
         d = today - timedelta(days=delta)
@@ -565,7 +592,7 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
             "queryDate": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}",
         }
 
-        r = requests.post(url, data=form_data, headers=HEADERS, timeout=15)
+        r = SESSION.post(url, data=form_data, timeout=15)
         r.encoding = "utf-8"
 
         if r.status_code != 200:
@@ -585,19 +612,36 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
         dealer_acc = 0
         has_foreign = has_trust = has_dealer = False
 
-        # 找到所有表格的 tr
+        # 找到所有表格的 tr（找齊三者後提早 break，省去後續無謂解析）
         for table in soup.find_all("table"):
             for tr in table.find_all("tr"):
                 tds = tr.find_all("td")
                 if len(tds) < 12:
                     continue
 
-                name = tds[0].get_text(strip=True)
                 vals = [td.get_text(strip=True) for td in tds]
 
-                # 多空淨額-未平倉口數 = index 11（固定位置）
-                net_oi = _safe_int(vals[11]) if len(vals) > 11 else 0
-                net_trade = _safe_int(vals[5]) if len(vals) > 5 else 0
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # 修正 TAIFEX rowspan 坑：
+                # 自營商列比其他列多一個「商品名稱」欄（rowspan="3"），
+                # 導致 tds[0] 取到的是「臺股期貨」而非「自營商」。
+                # 改為動態尋找身分別所在的 index。
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                name_idx = -1
+                for i in range(min(3, len(vals))):
+                    if "自營商" in vals[i] or "投信" in vals[i] or "外資" in vals[i]:
+                        name_idx = i
+                        break
+
+                if name_idx == -1:
+                    continue
+
+                name = vals[name_idx]
+
+                # 欄位相對 name_idx 的 offset（固定結構）
+                # net_trade = name_idx + 5，net_oi = name_idx + 11
+                net_oi    = _safe_int(vals[name_idx + 11]) if len(vals) > name_idx + 11 else 0
+                net_trade = _safe_int(vals[name_idx + 5])  if len(vals) > name_idx + 5  else 0
 
                 # 驗證：口數通常在 -500,000 ~ +500,000 之間
                 if abs(net_oi) > 1_000_000:
@@ -620,6 +664,10 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
                     dealer_acc += net_oi
                     has_dealer = True
 
+            # 三者都找到 → 跳出 table 迴圈，省下後續無謂解析
+            if has_foreign and has_trust and has_dealer:
+                break
+
         result["dealer_net_oi"] = dealer_acc
 
         if has_foreign or has_trust or has_dealer:
@@ -636,9 +684,10 @@ def fetch_futures_institutional(date_str: str) -> Optional[dict]:
 def fetch_futures_history(days: int = 6) -> list:
     """抓取近 N 天的期貨三大法人"""
     results = []
-    today = datetime.now(TZ)
+    today   = datetime.now(TZ)
+    start_d = _start_delta()
 
-    for delta in range(days * 2 + 5):
+    for delta in range(start_d, start_d + days * 2 + 5):
         if len(results) >= days:
             break
         d = today - timedelta(days=delta)
@@ -677,8 +726,7 @@ def fetch_tdcc_holders(stock_id: str) -> Optional[dict]:
             "Session2": "",
         }
 
-        r = requests.post(url, data=form_data, headers={
-            **HEADERS,
+        r = SESSION.post(url, data=form_data, headers={
             "Referer": "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock",
         }, timeout=15)
         r.encoding = "utf-8"
