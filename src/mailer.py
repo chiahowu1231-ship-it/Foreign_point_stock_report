@@ -833,16 +833,37 @@ def build_html(summary: dict) -> str:
         f'</p></div>'
     )
 
-    # ── GitHub Actions 連結 ───────────────────────────
-    srv  = os.getenv("GITHUB_SERVER_URL")
-    repo = os.getenv("GITHUB_REPOSITORY")
-    rid  = os.getenv("GITHUB_RUN_ID")
-    if srv and repo and rid:
-        link = f"{srv}/{repo}/actions/runs/{rid}"
+    # ── GitHub Pages 網頁版 + Actions 連結 ────────────
+    srv       = os.getenv("GITHUB_SERVER_URL")
+    repo      = os.getenv("GITHUB_REPOSITORY")
+    rid       = os.getenv("GITHUB_RUN_ID")
+    pages_url = (os.getenv("PAGES_URL") or "").strip()
+
+    # 自動推導 Pages URL（若 env 未提供且 repo 環境存在）
+    if not pages_url and repo:
+        owner, _, repo_name = repo.partition("/")
+        if owner and repo_name:
+            pages_url = f"https://{owner}.github.io/{repo_name}/"
+
+    if pages_url or (srv and repo and rid):
+        links = []
+        if pages_url:
+            links.append(
+                f'<a href="{pages_url}" style="font-size:13px;color:#fff;'
+                f'background:#1F6FB2;padding:5px 12px;border-radius:4px;'
+                f'text-decoration:none;font-weight:600;display:inline-block;">'
+                f'🌐 開啟網頁版完整報告</a>'
+            )
+        if srv and repo and rid:
+            link = f"{srv}/{repo}/actions/runs/{rid}"
+            links.append(
+                f'<a href="{link}" style="font-size:12px;color:#2E86C1;'
+                f'text-decoration:none;margin-left:14px;">'
+                f'🔗 Workflow 執行記錄</a>'
+            )
         p.append(
-            f'<div style="padding:7px 20px;background:#E8ECF0;border-bottom:1px solid #D0D8E4;">'
-            f'<a href="{link}" style="font-size:12px;color:#2E86C1;text-decoration:none;">'
-            f'🔗 GitHub Actions Workflow 執行記錄</a></div>'
+            f'<div style="padding:10px 20px;background:#E8ECF0;'
+            f'border-bottom:1px solid #D0D8E4;">{"".join(links)}</div>'
         )
 
     p.append('<div style="padding:16px 20px 20px;">')
