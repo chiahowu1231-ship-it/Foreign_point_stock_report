@@ -1,1 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="台灣外資分點狙擊分析報告 — 三大法人籌碼、外資分點明細、AI 深度分析">
+  <meta name="theme-color" content="#0B1120">
+  <title>外資分點狙擊分析 — TAIWAN</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
 
+<!-- ═══ 頂部 Sticky Header ═══════════════════════════ -->
+<header class="site-header">
+  <div class="header-brand">
+    <div class="header-icon">📈</div>
+    <div>
+      <div class="header-title">外資分點狙擊分析</div>
+      <div class="header-meta" id="hdr-time">—</div>
+    </div>
+  </div>
+  <div id="hdr-status"></div>
+</header>
+
+<div class="page-wrapper">
+
+  <!-- ═══ Hero 封面 ════════════════════════════════ -->
+  <div class="report-hero">
+    <div class="hero-date" id="hero-date">LOADING…</div>
+    <h1 class="hero-title">TAIWAN 外資分點<br>狙擊分析報告</h1>
+    <div class="hero-stats" id="hero-stats">
+      <div class="hero-stat skeleton" style="width:120px;height:24px"></div>
+      <div class="hero-stat skeleton" style="width:100px;height:24px"></div>
+      <div class="hero-stat skeleton" style="width:130px;height:24px"></div>
+    </div>
+  </div>
+
+  <!-- ═══ 導覽 Tabs ════════════════════════════════ -->
+  <nav class="nav-tabs" id="nav-tabs" role="tablist">
+    <button class="nav-tab active" data-panel="panel-market" role="tab">📊 大盤環境</button>
+    <button class="nav-tab" data-panel="panel-broker" role="tab">🏦 外資分點</button>
+    <button class="nav-tab" data-panel="panel-ai" role="tab">🤖 AI 分析</button>
+  </nav>
+
+  <!-- ═══ Panel 1: 大盤環境 ════════════════════════ -->
+  <section class="tab-panel active" id="panel-market" role="tabpanel">
+
+    <!-- 大盤指數 -->
+    <div class="section-hdr">
+      <div class="section-hdr-bar"></div>
+      <h2>大盤指數 ＋ 成交量</h2>
+      <span class="sub" id="taiex-range"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table id="tbl-taiex">
+        <thead><tr>
+          <th>日期</th>
+          <th>收盤指數</th>
+          <th>漲跌點</th>
+          <th>成交金額（億）</th>
+          <th>量比（5日均）</th>
+        </tr></thead>
+        <tbody id="tbody-taiex">
+          <tr><td colspan="5" class="empty-state">載入中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 三大法人 -->
+    <div class="section-hdr">
+      <div class="section-hdr-bar" style="background:var(--accent-blue)"></div>
+      <h2>三大法人買賣超（元）</h2>
+      <span class="sub" id="inst-range"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table id="tbl-inst">
+        <thead><tr>
+          <th>日期</th>
+          <th>外資</th>
+          <th>投信</th>
+          <th>自營商</th>
+          <th>三大合計</th>
+        </tr></thead>
+        <tbody id="tbody-inst">
+          <tr><td colspan="5" class="empty-state">載入中…</td></tr>
+        </tbody>
+        <tfoot><tr><td colspan="5" class="tbl-foot" id="inst-cum-foot"></td></tr></tfoot>
+      </table>
+    </div>
+
+    <!-- 期貨 -->
+    <div class="section-hdr">
+      <div class="section-hdr-bar" style="background:var(--purple)"></div>
+      <h2>期貨三大法人台指期淨部位（口）</h2>
+      <span class="sub" id="fut-range"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table id="tbl-futures">
+        <thead><tr>
+          <th>日期</th>
+          <th>外資淨口數</th>
+          <th>投信淨口數</th>
+          <th>自營淨口數</th>
+        </tr></thead>
+        <tbody id="tbody-futures">
+          <tr><td colspan="4" class="empty-state">載入中…</td></tr>
+        </tbody>
+      </table>
+      <div class="tbl-foot">正值＝淨多單（看漲）｜負值＝淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0</div>
+    </div>
+
+  </section>
+
+  <!-- ═══ Panel 2: 外資分點 ════════════════════════ -->
+  <section class="tab-panel" id="panel-broker" role="tabpanel">
+    <div class="section-hdr">
+      <div class="section-hdr-bar" style="background:var(--gold)"></div>
+      <h2>外資分點明細</h2>
+      <span class="sub" id="broker-count"></span>
+    </div>
+    <div id="broker-list">
+      <div class="empty-state"><div class="icon">⏳</div>載入中…</div>
+    </div>
+  </section>
+
+  <!-- ═══ Panel 3: AI 分析 ════════════════════════ -->
+  <section class="tab-panel" id="panel-ai" role="tabpanel">
+    <div class="section-hdr">
+      <div class="section-hdr-bar" style="background:var(--teal)"></div>
+      <h2>AI 深度分析</h2>
+      <span class="sub" id="ai-model-badge"></span>
+    </div>
+    <div id="ai-sections">
+      <div class="empty-state"><div class="icon">🤖</div>載入中…</div>
+    </div>
+  </section>
+
+</div><!-- /.page-wrapper -->
+
+<!-- ═══ Footer ════════════════════════════════════ -->
+<footer class="site-footer">
+  <div>此頁面由 GitHub Actions 自動產生｜資料來源：TWSE / TAIFEX / Gemini AI</div>
+  <div class="disclaimer">
+    【免責聲明】帶進帶出是違法的行為，此資料皆為網上根據盤後資訊大數據所取得訊息，非作為或被視為買進或售出標的的邀請或意象，請自行依據取得資訊評估風險與獲利，有賺有賠請斟酌。
+  </div>
+</footer>
+
+<button id="back-top" title="回到頂部" aria-label="回到頂部">↑</button>
+
+<!-- ═══ JavaScript ════════════════════════════════ -->
+<script>
+// ─── Utility ────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmtDate = s => {
+  s = String(s || '').replace(/\D/g,'');
+  return s.length === 8 ? `${s.slice(0,4)}/${s.slice(4,6)}/${s.slice(6)}` : s;
+};
+const fmtNum = (n, digits=0) => {
+  const v = typeof n === 'string' ? parseFloat(n.replace(/,/g,'')) : n;
+  if (isNaN(v)) return n;
+  return v.toLocaleString('zh-TW', {minimumFractionDigits:digits, maximumFractionDigits:digits});
+};
+const valColor = v => {
+  const n = parseFloat(String(v).replace(/[,+億萬口]/g,''));
+  if (isNaN(n) || n === 0) return 'neu';
+  return n > 0 ? 'pos' : 'neg';
+};
+const colorSpan = (v, txt) => `<span class="${valColor(v)}">${txt}</span>`;
+const arrow = v => {
+  const n = parseFloat(String(v).replace(/[,+億萬]/g,''));
+  if (isNaN(n) || n === 0) return '';
+  return n > 0 ? '<span class="arrow pos">▲</span>' : '<span class="arrow neg">▼</span>';
+};
+const fmtBillion = n => {
+  n = typeof n === 'string' ? parseFloat(n.replace(/,/g,'')) : n;
+  if (isNaN(n)) return '0';
+  if (Math.abs(n) >= 1e9) return `${(n/1e8).toFixed(2)}億`;
+  if (Math.abs(n) >= 1e8) return `${(n/1e8).toFixed(1)}億`;
+  if (Math.abs(n) >= 1e4) return `${(n/1e4).toFixed(0)}萬`;
+  return fmtNum(n);
+};
+const biasBadge = v => {
+  const n = parseFloat(String(v).replace(/[%+ ]/g,''));
+  if (isNaN(n))    return `<span class="bias-badge bias-n">${v||'—'}</span>`;
+  if (n > 5)       return `<span class="bias-badge bias-rh">${v}</span>`;
+  if (n > 1)       return `<span class="bias-badge bias-r">${v}</span>`;
+  if (n < -5)      return `<span class="bias-badge bias-gh">${v}</span>`;
+  if (n < -1)      return `<span class="bias-badge bias-g">${v}</span>`;
+  return `<span class="bias-badge bias-n">${v||'—'}</span>`;
+};
+
+// ─── Tabs ──────────────────────────────────────
+document.querySelectorAll('.nav-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    $(btn.dataset.panel).classList.add('active');
+    window.scrollTo({top:0, behavior:'smooth'});
+  });
+});
+
+// ─── Back-to-top ───────────────────────────────
+window.addEventListener('scroll', () => {
+  $('back-top').classList.toggle('visible', window.scrollY > 300);
+});
+$('back-top').addEventListener('click', () => window.scrollTo({top:0, behavior:'smooth'}));
+
+// ─── AI 段落收折 ───────────────────────────────
+document.addEventListener('click', e => {
+  const hdr = e.target.closest('.ai-sec-hdr');
+  if (hdr) hdr.closest('.ai-section').classList.toggle('open');
+});
+
+// ─── Render: TAIEX ─────────────────────────────
+function renderTaiex(taiex) {
+  if (!taiex || !taiex.length) {
+    $('tbody-taiex').innerHTML = '<tr><td colspan="5" class="empty-state">無資料</td></tr>';
+    return;
+  }
+  const amts = taiex.map(d => d.amount_billion || 0);
+  const avg5 = amts.slice(1, 6).reduce((a,b) => a+b, 0) / Math.max(amts.slice(1, 6).length, 1);
+
+  $('taiex-range').textContent = `${fmtDate(taiex[Math.min(taiex.length-1, 5)].date)} ～ ${fmtDate(taiex[0].date)}`;
+
+  $('tbody-taiex').innerHTML = taiex.slice(0, 6).map((d, i) => {
+    const chg   = d.change || 0;
+    const sign  = chg > 0 ? '+' : '';
+    const chgS  = typeof chg === 'number' ? `${sign}${chg.toFixed(2)}` : String(chg);
+    const amt   = d.amount_billion || 0;
+    const ratio = avg5 > 0 ? (amt / avg5) : 0;
+    const ratioS = avg5 > 0 ? ratio.toFixed(2) + 'x' : '—';
+    const barW  = Math.min(Math.round(ratio * 30), 60);
+    const barC  = ratio > 1.2 ? 'var(--pos)' : ratio < 0.8 ? 'var(--neg)' : 'var(--neu)';
+    const closeStr = typeof d.close === 'number' ? d.close.toLocaleString('zh-TW',{minimumFractionDigits:2}) : d.close;
+    return `<tr class="${i===0?'today':''}">
+      <td class="date-cell">${fmtDate(d.date)}${i===0?'<span class="badge-new">最新</span>':''}</td>
+      <td><b>${closeStr}</b></td>
+      <td>${colorSpan(chg, chgS)}${arrow(chg)}</td>
+      <td>${fmtNum(amt)} 億</td>
+      <td><span style="color:${barC};font-weight:${i===0?'700':'400'}">${ratioS}</span><span class="vol-bar" style="width:${barW}px;background:${barC}"></span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Render: 三大法人 ──────────────────────────
+function renderInstitutional(inst) {
+  if (!inst || !inst.length) {
+    $('tbody-inst').innerHTML = '<tr><td colspan="5" class="empty-state">無資料</td></tr>';
+    return;
+  }
+  const n    = Math.min(inst.length, 6);
+  const data = inst.slice(0, n);
+  $('inst-range').textContent = `${fmtDate(data[n-1].date)} ～ ${fmtDate(data[0].date)}`;
+
+  let rowsHtml = data.map((d, i) => {
+    const fg  = d.foreign?.net || 0;
+    const tr  = d.trust?.net   || 0;
+    const dl  = d.dealer?.net  || 0;
+    const tot = d.total_net || (fg + tr + dl);
+    return `<tr class="${i===0?'today':''}">
+      <td class="date-cell">${fmtDate(d.date)}${i===0?'<span class="badge-new">最新</span>':''}</td>
+      <td>${colorSpan(fg, fmtBillion(fg))}${i===0?arrow(fg):''}</td>
+      <td>${colorSpan(tr, fmtBillion(tr))}${i===0?arrow(tr):''}</td>
+      <td>${colorSpan(dl, fmtBillion(dl))}${i===0?arrow(dl):''}</td>
+      <td><b>${colorSpan(tot, fmtBillion(tot))}</b>${i===0?arrow(tot):''}</td>
+    </tr>`;
+  }).join('');
+
+  // 累計列
+  const cumFg  = data.reduce((s,d) => s + (d.foreign?.net || 0), 0);
+  const cumTr  = data.reduce((s,d) => s + (d.trust?.net   || 0), 0);
+  const cumDl  = data.reduce((s,d) => s + (d.dealer?.net  || 0), 0);
+  const cumTot = data.reduce((s,d) => s + (d.total_net    || 0), 0);
+
+  rowsHtml += `<tr class="cum-row">
+    <td><b>${n}日累計</b></td>
+    <td>${colorSpan(cumFg, fmtBillion(cumFg))}</td>
+    <td>${colorSpan(cumTr, fmtBillion(cumTr))}</td>
+    <td>${colorSpan(cumDl, fmtBillion(cumDl))}</td>
+    <td><b>${colorSpan(cumTot, fmtBillion(cumTot))}</b></td>
+  </tr>`;
+  $('tbody-inst').innerHTML = rowsHtml;
+
+  // 趨勢說明
+  const streak = key => {
+    const vals = data.map(d => d[key]?.net || 0);
+    const b = vals.filter(v => v > 0).length;
+    const s = vals.filter(v => v < 0).length;
+    if (b > s) return `<span class="badge badge-buy">買超${b}日</span>`;
+    if (s > b) return `<span class="badge badge-sell">賣超${s}日</span>`;
+    return `<span class="badge badge-neu">多空互見</span>`;
+  };
+  $('inst-cum-foot').innerHTML =
+    `外資 ${streak('foreign')}　投信 ${streak('trust')}　自營 ${streak('dealer')}`;
+}
+
+// ─── Render: 期貨 ──────────────────────────────
+function renderFutures(futures) {
+  if (!futures || !futures.length) {
+    $('tbody-futures').innerHTML = '<tr><td colspan="4" class="empty-state">無資料</td></tr>';
+    return;
+  }
+  const data = futures.slice(0, 6);
+  $('fut-range').textContent = `${fmtDate(data[data.length-1].date)} ～ ${fmtDate(data[0].date)}`;
+
+  $('tbody-futures').innerHTML = data.map((d, i) => {
+    const fg = d.foreign_net_oi || 0;
+    const tr = d.trust_net_oi   || 0;
+    const dl = d.dealer_net_oi  || 0;
+    const sf = fg > 0 ? '+' : '';
+    const st = tr > 0 ? '+' : '';
+    const sd = dl > 0 ? '+' : '';
+    return `<tr class="${i===0?'today':''}">
+      <td class="date-cell">${fmtDate(d.date)}${i===0?'<span class="badge-new">最新</span>':''}</td>
+      <td>${colorSpan(fg, sf + fmtNum(fg))}${i===0?arrow(fg):''}</td>
+      <td>${colorSpan(tr, st + fmtNum(tr))}${i===0?arrow(tr):''}</td>
+      <td>${colorSpan(dl, dl===0 ? '0' : sd + fmtNum(dl))}${i===0 && dl !== 0 ? arrow(dl) : ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── Render: 外資分點 ──────────────────────────
+function renderBrokers(brokers) {
+  if (!brokers || !brokers.length) {
+    $('broker-list').innerHTML = '<div class="empty-state"><div class="icon">📭</div>無分點資料</div>';
+    return;
+  }
+  $('broker-count').textContent = `共 ${brokers.length} 家`;
+  const medals = ['🥇','🥈','🥉'];
+
+  $('broker-list').innerHTML = brokers.map((b, idx) => {
+    const net  = b.total_net || 0;
+    const rows = (b.rows || []).slice(0, 5);
+    const rowsHtml = rows.length
+      ? `<div class="tbl-wrap" style="margin:0;border:none;border-radius:0">
+          <table>
+            <thead><tr>
+              <th style="width:28px">#</th>
+              <th style="text-align:left">代號　股票名稱</th>
+              <th>淨超（張）</th>
+              <th>均價</th>
+              <th>現價</th>
+              <th>乖離率</th>
+            </tr></thead>
+            <tbody>${rows.map((r, j) => `<tr>
+              <td style="color:var(--text-muted);font-size:11px;text-align:center">${j+1}</td>
+              <td style="text-align:left"><b style="color:var(--accent-sky)">${r.sid||''}</b>&nbsp;${r.name||''}</td>
+              <td>${colorSpan(r.net, fmtNum(r.net))}</td>
+              <td style="color:var(--text-secondary)">${r.avg||'—'}</td>
+              <td><b>${r.price||'—'}</b></td>
+              <td>${biasBadge(r.bias||'')}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>`
+      : `<div class="tbl-foot">本期無明細資料</div>`;
+    return `<div class="broker-card">
+      <div class="broker-hdr">
+        <span class="broker-rank">${medals[idx] || `#${idx+1}`}</span>
+        <span class="broker-name">${b.broker || ''}</span>
+        <span class="broker-net ${valColor(net)}">
+          <span class="label">總淨超</span>${fmtNum(net)} 張
+        </span>
+      </div>
+      ${rowsHtml}
+    </div>`;
+  }).join('');
+}
+
+// ─── Render: AI 分析 ───────────────────────────
+const SEC_CFG = {
+  A: { label:'大盤籌碼環境研判', cls:'ai-A', numColor:'var(--accent-blue)' },
+  B: { label:'外資力量深度剖析', cls:'ai-B', numColor:'var(--gold)'        },
+  C: { label:'明日觀察清單',     cls:'ai-C', numColor:'var(--neg)'         },
+  D: { label:'風控與資金配置',   cls:'ai-D', numColor:'var(--pos)'         },
+  F: { label:'外資交叉比對亮點', cls:'ai-F', numColor:'var(--accent-blue)' },
+};
+
+function renderAI(aiText) {
+  if (!aiText || !aiText.trim()) {
+    $('ai-sections').innerHTML = '<div class="empty-state"><div class="icon">🤖</div>無 AI 分析</div>';
+    return;
+  }
+
+  const lines = aiText.split('\n');
+  const sections = [];
+  let cur = null;
+
+  const piLine = raw => raw
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/\*([^*]+?)\*/g,  '<em>$1</em>');
+
+  for (const line of lines) {
+    const s = line.trim();
+    if (!s || s === '---') continue;
+
+    const hm = s.match(/^([A-F])\s*[)）:：]\s*(.*)/);
+    if (hm) {
+      const letter = hm[1];
+      if (letter === 'E') { cur = null; continue; }   // 移除一句話摘要
+      if (cur) sections.push(cur);
+      const ai_title = hm[2].replace(/[：:]+$/, '').trim();
+      const cfg = SEC_CFG[letter] || { label:ai_title, cls:'ai-A', numColor:'var(--accent-blue)' };
+      cur = { letter, title:ai_title || cfg.label, cfg, body:[] };
+      continue;
+    }
+    if (!cur) continue;
+
+    const nm = s.match(/^(\d+)\s*[)）.]\s*(.*)/);
+    if (nm) { cur.body.push({ type:'item', num:nm[1], text:piLine(nm[2]) }); continue; }
+    const sm = s.match(/^[-•*＊]\s*(.*)/);
+    if (sm) { cur.body.push({ type:'sub', text:piLine(sm[1]) }); continue; }
+    cur.body.push({ type:'text', text:piLine(s) });
+  }
+  if (cur) sections.push(cur);
+
+  $('ai-sections').innerHTML = sections.map((sec, si) => {
+    const bodyHtml = sec.body.map(item => {
+      if (item.type === 'item') return `<div class="ai-item">
+        <span class="ai-item-num" style="background:${sec.cfg.numColor}">${item.num}</span>
+        <div>${item.text}</div></div>`;
+      if (item.type === 'sub')  return `<div class="ai-sub">${item.text}</div>`;
+      return `<div style="margin:4px 0 4px 4px;color:var(--text-secondary);font-size:13px">${item.text}</div>`;
+    }).join('');
+
+    return `<div class="ai-section ${sec.cfg.cls}${si===0?' open':''}">
+      <div class="ai-sec-hdr">
+        <span class="letter">${sec.letter}</span>
+        <span>${sec.letter}）${sec.title}</span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="ai-sec-body">${bodyHtml}</div>
+    </div>`;
+  }).join('');
+}
+
+// ─── 主入口：載入 data.json ────────────────────
+async function init() {
+  let data;
+  try {
+    const res = await fetch('data.json?ts=' + Date.now()); // 防快取
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    console.error('無法載入 data.json:', e);
+    document.querySelectorAll('[id^="tbody-"]').forEach(el => {
+      el.innerHTML = '<tr><td colspan="6" class="empty-state">⚠ 資料載入失敗，請稍後重試</td></tr>';
+    });
+    $('hero-stats').innerHTML = '<div class="hero-stat" style="color:var(--pos)">⚠ 資料載入失敗</div>';
+    $('broker-list').innerHTML  = '<div class="empty-state">⚠ 載入失敗</div>';
+    $('ai-sections').innerHTML  = '<div class="empty-state">⚠ 載入失敗</div>';
+    return;
+  }
+
+  // Header
+  const dt = data.generated_at || '';
+  $('hdr-time').textContent = dt.slice(0,16).replace('T',' ');
+  $('hdr-status').innerHTML = data.success
+    ? '<span class="status-pill ok"><span class="status-dot"></span>正常</span>'
+    : '<span class="status-pill err"><span class="status-dot"></span>部分失敗</span>';
+
+  // Hero
+  const rptDate = (dt || '').slice(0, 10) || '—';
+  $('hero-date').textContent = `報告日期  ${rptDate}`;
+  $('hero-stats').innerHTML = [
+    `<div class="hero-stat">近 <strong>${data.days||5}</strong> 日</div>`,
+    `<div class="hero-stat">資料 <strong>${(data.total_rows||0).toLocaleString()}</strong> 筆</div>`,
+    `<div class="hero-stat">券商 OK <strong>${data.brokers_ok||0}</strong> / FAIL <strong style="color:var(--pos)">${data.brokers_fail||0}</strong></div>`,
+  ].join('');
+
+  // AI model badge
+  const model = [data.ai_provider, data.ai_model].filter(Boolean).join(' ');
+  if (model) $('ai-model-badge').textContent = model;
+
+  // Render
+  const md = data.market_data || {};
+  renderTaiex(md.taiex);
+  renderInstitutional(md.institutional);
+  renderFutures(md.futures);
+  renderBrokers(data.top_preview);
+  renderAI(data.ai_analysis || '');
+}
+
+init();
+</script>
+</body>
+</html>
