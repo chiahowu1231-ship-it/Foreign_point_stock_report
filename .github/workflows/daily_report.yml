@@ -5,10 +5,24 @@ on:
     - cron: "0 10 * * 1-5"
   workflow_dispatch: {}
 
+# ── 權限：Pages 發布需要 ────────────────────────────
+permissions:
+  contents: read
+  pages:    write
+  id-token: write
+
+# ── 並發鎖：避免重複觸發 ────────────────────────────
+concurrency:
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: false
+
 jobs:
+  # ════════════════════════════════════════════════
+  #  Job 1: 產生報表、寄 Email、建立 Pages artifact
+  # ════════════════════════════════════════════════
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 20   # 加入大盤資料抓取，預留更多時間
+    timeout-minutes: 25
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -17,9 +31,9 @@ jobs:
       TOP_N: "10"
       DEBUG_HTML: "1"
 
-      # ✅ 大盤籌碼抓取（1=啟用, 0=停用）
+      # ✅ 大盤籌碼抓取
       MARKET_DATA: "1"
-      MARKET_HISTORY_DAYS: "6"   # 抓取天數（含當天+前5天）
+      MARKET_HISTORY_DAYS: "6"
 
     steps:
       - name: Checkout
@@ -29,13 +43,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # run_report 現在會同時抓大盤籌碼（三大法人、量能、融資融券、期貨、千張大戶）
+      # ── 產生 Excel/PDF + 大盤籌碼資料 ────────────
       - name: Generate Excel/PDF + market data (DAYS=5)
         continue-on-error: true
         env:
@@ -43,7 +58,7 @@ jobs:
         run: |
           python src/run_report.py
 
-      # v9 AI 分析：prompt 內含大盤籌碼 context
+      # ── Gemini AI 分析 ───────────────────────────
       - name: Gemini analysis (v9 + market context)
         if: always()
         env:
@@ -59,6 +74,7 @@ jobs:
         run: |
           python src/ai_analyze_gemini.py
 
+      # ── 驗證 AI 分析 ────────────────────────────
       - name: Verify Gemini analysis (safe)
         if: always()
         run: |
@@ -72,7 +88,6 @@ jobs:
           print("ai_analysis_chars =", len(t))
           print("ai_analysis_lines =", len(t.splitlines()))
 
-          # 驗證大盤資料是否成功抓取
           md = s.get("market_data", {})
           print(f"market_data: inst={len(md.get('institutional',[]))}, "
                 f"taiex={len(md.get('taiex',[]))}, "
@@ -89,7 +104,26 @@ jobs:
               print("✅ AI 分析正常")
           PY
 
-      - name: Upload artifacts (auto expire)
+      # ── 🆕 建立 GitHub Pages 靜態網頁 ─────────────
+      - name: Build GitHub Pages site
+        if: always()
+        run: |
+          python src/build_site.py
+
+      # ── 🆕 設定 Pages（需 Repo Settings 已啟用） ──
+      - name: Setup Pages
+        if: always()
+        uses: actions/configure-pages@v5
+
+      # ── 🆕 上傳 site/ 為 Pages artifact ─────────
+      - name: Upload Pages artifact
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      # ── 上傳 Actions artifacts（保留原有功能）──
+      - name: Upload report artifacts (auto expire)
         if: always()
         uses: actions/upload-artifact@v6
         with:
@@ -103,13 +137,20 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: Build mail subject
+      # ── 建立信件主旨並推導 Pages URL ────────────
+      - name: Build mail subject + Pages URL
         if: always()
         run: |
           REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REPO_OWNER="${GITHUB_REPOSITORY%%/*}"
           REPORT_DATE="$(TZ=Asia/Taipei date +'%Y-%m-%d')"
-          echo "MAIL_SUBJECT=【外資分點狙擊分析】${REPORT_DATE}（TW 18:00）${REPO_NAME}" >> $GITHUB_ENV
+          ACTUAL_TIME="$(TZ=Asia/Taipei date +'%H:%M')"
+          PAGES_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/"
+          echo "MAIL_SUBJECT=【外資分點狙擊分析】${REPORT_DATE} ${ACTUAL_TIME}（TW）${REPO_NAME}" >> $GITHUB_ENV
+          echo "PAGES_URL=${PAGES_URL}" >> $GITHUB_ENV
+          echo "🌐 Pages URL: ${PAGES_URL}"
 
+      # ── 寄送 Email（一定執行） ─────────────────
       - name: Send email (always)
         if: always()
         env:
@@ -121,5 +162,29 @@ jobs:
           MAIL_TO:    ${{ secrets.MAIL_TO }}
           MAIL_BCC:   ${{ secrets.MAIL_BCC }}
           MAIL_SUBJECT: ${{ env.MAIL_SUBJECT }}
+          PAGES_URL:    ${{ env.PAGES_URL }}
         run: |
           python src/mailer.py
+
+  # ════════════════════════════════════════════════
+  #  Job 2: 發布 GitHub Pages（接在 Job 1 之後）
+  # ════════════════════════════════════════════════
+  deploy-pages:
+    needs: report
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    environment:
+      name: github-pages
+      url:  ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Print Pages URL
+        run: |
+          echo "🌐 GitHub Pages 部署完成："
+          echo "   ${{ steps.deploy.outputs.page_url }}"
