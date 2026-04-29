@@ -16,6 +16,10 @@ concurrency:
   group: "pages-${{ github.ref }}"
   cancel-in-progress: false
 
+# ── 強制所有 JS Actions 用 Node 24（消除 Node 20 deprecation 警告）─
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # ════════════════════════════════════════════════
   #  Job 1: 產生報表、寄 Email、建立 Pages artifact
@@ -25,7 +29,6 @@ jobs:
     timeout-minutes: 25
 
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       TZ: Asia/Taipei
       DAYS: "5"
       TOP_N: "10"
@@ -114,6 +117,8 @@ jobs:
       - name: Setup Pages
         if: always()
         uses: actions/configure-pages@v5
+        with:
+          enablement: true   # 第一次執行時自動啟用 Pages（之後可移除）
 
       # ── 🆕 上傳 site/ 為 Pages artifact ─────────
       - name: Upload Pages artifact
