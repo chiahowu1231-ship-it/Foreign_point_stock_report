@@ -106,7 +106,7 @@
           <tr><td colspan="4" class="empty-state">載入中…</td></tr>
         </tbody>
       </table>
-      <div class="tbl-foot">正值＝淨多單（看漲）｜負值＝淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0</div>
+      <div class="tbl-foot">正值＝淨多單（看漲）｜負值＝淨空單（看跌）｜<b style="color:var(--pos)">▲ 紅</b>＝部位增加｜<b style="color:var(--neg)">▼ 綠</b>＝部位減少｜自營商主要以選擇權避險，期貨部位通常接近 0</div>
     </div>
 
   </section>
@@ -304,6 +304,16 @@ function renderFutures(futures) {
   const data = futures.slice(0, 6);
   $('fut-range').textContent = `${fmtDate(data[data.length-1].date)} ～ ${fmtDate(data[0].date)}`;
 
+  // 期貨累計部位的顏色/箭頭邏輯：
+  //   數值本身只標正/負號（+ 多單 / - 空單），不上色
+  //   今日列才依「日對日變化（delta）」上色與箭頭：
+  //     delta > 0（部位增加）→ 紅 ▲   （多方力道增強）
+  //     delta < 0（部位減少）→ 綠 ▼   （空方力道增強或多方撤退）
+  const deltaColor = d => d > 0 ? 'pos' : d < 0 ? 'neg' : 'neu';
+  const deltaArrow = d => d > 0
+    ? '<span class="arrow pos">▲</span>'
+    : d < 0 ? '<span class="arrow neg">▼</span>' : '';
+
   $('tbody-futures').innerHTML = data.map((d, i) => {
     const fg = d.foreign_net_oi || 0;
     const tr = d.trust_net_oi   || 0;
@@ -311,11 +321,31 @@ function renderFutures(futures) {
     const sf = fg > 0 ? '+' : '';
     const st = tr > 0 ? '+' : '';
     const sd = dl > 0 ? '+' : '';
+
+    // 計算昨日 delta（最後一列沒有「昨日」可比）
+    const prev = data[i + 1];
+    const dFg  = prev ? fg - (prev.foreign_net_oi || 0) : 0;
+    const dTr  = prev ? tr - (prev.trust_net_oi   || 0) : 0;
+    const dDl  = prev ? dl - (prev.dealer_net_oi  || 0) : 0;
+
+    // 今日列才上色 + 箭頭（其餘列只顯示中性灰色數字）
+    const fgCell = i === 0
+      ? `<span class="${deltaColor(dFg)}">${sf}${fmtNum(fg)}</span>${deltaArrow(dFg)}`
+      : `<span class="neu">${sf}${fmtNum(fg)}</span>`;
+    const trCell = i === 0
+      ? `<span class="${deltaColor(dTr)}">${st}${fmtNum(tr)}</span>${deltaArrow(dTr)}`
+      : `<span class="neu">${st}${fmtNum(tr)}</span>`;
+    const dlCell = i === 0
+      ? (dl === 0
+          ? '<span class="neu">0</span>'
+          : `<span class="${deltaColor(dDl)}">${sd}${fmtNum(dl)}</span>${deltaArrow(dDl)}`)
+      : `<span class="neu">${dl === 0 ? '0' : sd + fmtNum(dl)}</span>`;
+
     return `<tr class="${i===0?'today':''}">
       <td class="date-cell">${fmtDate(d.date)}${i===0?'<span class="badge-new">最新</span>':''}</td>
-      <td>${colorSpan(fg, sf + fmtNum(fg))}${i===0?arrow(fg):''}</td>
-      <td>${colorSpan(tr, st + fmtNum(tr))}${i===0?arrow(tr):''}</td>
-      <td>${colorSpan(dl, dl===0 ? '0' : sd + fmtNum(dl))}${i===0 && dl !== 0 ? arrow(dl) : ''}</td>
+      <td>${fgCell}</td>
+      <td>${trCell}</td>
+      <td>${dlCell}</td>
     </tr>`;
   }).join('');
 }
