@@ -430,6 +430,13 @@ def _render_margin(margin: list) -> str:
 
 
 def _render_futures(futures: list) -> str:
+    """
+    期貨累計部位的顏色/箭頭邏輯（與現貨買賣超不同！）：
+      累計部位是「庫存」，顏色與箭頭應該反映「日對日變化」而非絕對值正負：
+        delta > 0 → 紅 ▲（部位增加：多方加碼/空方回補）
+        delta < 0 → 綠 ▼（部位減少：多方減碼/空方加碼）
+      只有今日列上色，歷史列顯示中性灰色避免干擾。
+    """
     if not futures:
         return ""
     hdr = _sec_hdr("📉", "期貨三大法人台指期淨部位（口）", "purple", "近 6 日｜未平倉淨口數")
@@ -439,29 +446,56 @@ def _render_futures(futures: list) -> str:
         ("外資淨口數", "right"), ("投信淨口數", "right"), ("自營淨口數", "right"),
         bg="#6C3483",
     )
-    for i, d in enumerate(futures[:6]):
+
+    data = futures[:6]
+    for i, d in enumerate(data):
         fg = d.get("foreign_net_oi", 0)
-        tr = d.get("trust_net_oi", 0)
-        dl = d.get("dealer_net_oi", 0)
+        tr = d.get("trust_net_oi",   0)
+        dl = d.get("dealer_net_oi",  0)
         bg = "#FFFDE7" if i == 0 else ("#F8F9FA" if i % 2 else "#FFF")
         is_t = (i == 0)
 
-        def _fc(v):
-            col = _color(v)
-            bld = "font-weight:700;" if is_t else "font-weight:500;"
-            return _td(
-                f'<span style="color:{col};{bld}">{_fbi(v)}</span>'
-                + (_arrow(v) if is_t else ""), "right"
-            )
+        # 計算昨日 delta（最後一列無「昨日」可比，delta=0）
+        prev = data[i + 1] if i + 1 < len(data) else None
+        d_fg = fg - (prev.get("foreign_net_oi", 0) if prev else fg)
+        d_tr = tr - (prev.get("trust_net_oi",   0) if prev else tr)
+        d_dl = dl - (prev.get("dealer_net_oi",  0) if prev else dl)
+
+        def _delta_color(delta):
+            return "#C0392B" if delta > 0 else "#27AE60" if delta < 0 else "#666"
+
+        def _delta_arrow(delta):
+            if delta > 0:
+                return ' <span style="color:#C0392B;">▲</span>'
+            elif delta < 0:
+                return ' <span style="color:#27AE60;">▼</span>'
+            return ""
+
+        def _fc(v, delta):
+            if is_t:
+                col = _delta_color(delta)
+                return _td(
+                    f'<span style="color:{col};font-weight:700;">{_fbi(v)}</span>'
+                    + _delta_arrow(delta), "right"
+                )
+            else:
+                # 歷史列：中性灰色不上色不加箭頭
+                return _td(
+                    f'<span style="color:#666;">{_fbi(v)}</span>', "right"
+                )
 
         date_html = _fmt_date(d.get("date","")) + ("&nbsp;" + _badge("最新","#6C3483") if is_t else "")
-        tbl += _tr(_td(date_html, bold=is_t), _fc(fg), _fc(tr), _fc(dl), bg=bg)
+        tbl += _tr(_td(date_html, bold=is_t),
+                   _fc(fg, d_fg), _fc(tr, d_tr), _fc(dl, d_dl), bg=bg)
 
     # 說明列
     tbl += (
         '<tr><td colspan="4" style="padding:5px 11px;font-size:11px;color:#888;'
         'background:#F8F9FA;border-top:1px solid #EAECEE;">'
-        '正值=淨多單（看漲）｜負值=淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0'
+        '正值=淨多單（看漲）｜負值=淨空單（看跌）｜'
+        '<b style="color:#C0392B;">▲ 紅</b>＝部位增加｜'
+        '<b style="color:#27AE60;">▼ 綠</b>＝部位減少｜'
+        '自營商主要以選擇權避險，期貨部位通常接近 0'
         '</td></tr>'
     )
     tbl += TABLE_CLOSE
@@ -1434,19 +1468,41 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         tbl.setStyle(TableStyle(ts))
         story.append(tbl)
 
-    # 期貨
+    # 期貨（累計部位用 delta 著色，與現貨買賣超邏輯不同）
     if futures:
         story += sub_hdr("■ 期貨三大法人台指期淨部位（口，近 6 日）")
         hdr = [p(t, fontName=FNB, fontSize=8, textColor=C["white"]) for t in
                ["日期","外資淨口數","投信淨口數","自營淨口數"]]
         rows = [hdr]
-        for i, d in enumerate(futures[:6]):
+        fut_data = futures[:6]
+        for i, d in enumerate(fut_data):
             fg = d.get("foreign_net_oi", 0)
-            tr = d.get("trust_net_oi", 0)
-            dl = d.get("dealer_net_oi", 0)
+            tr = d.get("trust_net_oi",   0)
+            dl = d.get("dealer_net_oi",  0)
+            prev = fut_data[i+1] if i+1 < len(fut_data) else None
+            d_fg = fg - (prev.get("foreign_net_oi", 0) if prev else fg)
+            d_tr = tr - (prev.get("trust_net_oi",   0) if prev else tr)
+            d_dl = dl - (prev.get("dealer_net_oi",  0) if prev else dl)
+
+            def _pv_delta(v, delta, bold=False):
+                """數字本身只標正負號；只有今日列依 delta 上色"""
+                if not bold:
+                    # 歷史列：中性灰色
+                    return p(_fbi(v), fontName=FN, fontSize=8, textColor=HEX("#555"))
+                if delta > 0:
+                    col = "#C0392B"; arr = " ▲"
+                elif delta < 0:
+                    col = "#1A7A40"; arr = " ▼"
+                else:
+                    col = "#555";    arr = ""
+                return p(f'<font color="{col}"><b>{_fbi(v)}{arr}</b></font>',
+                         fontName=FN, fontSize=8)
+
             rows.append([
                 p(_fmt_date(d.get("date","")), fontName=FNB if i==0 else FN, fontSize=8),
-                pv(_fbi(fg), bold=(i==0)), pv(_fbi(tr), bold=(i==0)), pv(_fbi(dl), bold=(i==0)),
+                _pv_delta(fg, d_fg, bold=(i==0)),
+                _pv_delta(tr, d_tr, bold=(i==0)),
+                _pv_delta(dl, d_dl, bold=(i==0)),
             ])
         tbl = Table(rows, colWidths=[CW*0.22]+[CW*0.26]*3)
         ts  = ts_base(C["purple"])
@@ -1454,7 +1510,9 @@ def build_analysis_pdf(summary: dict, pdf_path: str):
         ts += [("ALIGN",(1,0),(-1,-1),"RIGHT")]
         tbl.setStyle(TableStyle(ts))
         story.append(tbl)
-        note = p("＊ 正值=淨多單（看漲）｜負值=淨空單（看跌）｜自營商主要以選擇權避險，期貨部位通常接近 0",
+        note = p("＊ 正值=淨多單（看漲）｜負值=淨空單（看跌）｜"
+                 "▲ 紅=部位增加  ▼ 綠=部位減少｜"
+                 "自營商主要以選擇權避險，期貨部位通常接近 0",
                  fontName=FN, fontSize=7, textColor=HEX("#888"))
         story += [Spacer(1,1*mm), note]
 
