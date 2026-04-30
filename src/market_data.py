@@ -133,14 +133,43 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
       row 5: 合計（= 三大法人合計）
     有時會有「自營商合計」「外資及陸資合計」等合計行。
     """
-    # 1. 優先嘗試新版 RWD API（正確參數為 date）
-    url_new = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
-    data = _get_json(url_new, params={"response": "json", "date": date_str, "type": "day"})
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ⚠️ Bug fix（資料重複問題）：
+    #   新版 RWD API 對 date 參數寬容過頭，無論傳哪一天都回傳「最新交易日」，
+    #   導致 history 迴圈每天拿到同一筆資料。
+    # 修正策略：
+    #   Layer 1: 舊版 API (dayDate) 嚴格依日期回傳 → 優先使用
+    #   Layer 2: 新版 API (date) 作為備援，並驗證 title 日期
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Layer 1: 舊版 API（dayDate 參數，嚴格依日期回傳）
+    url_old = "https://www.twse.com.tw/exchangeReport/BFI82U"
+    data = _get_json(url_old, params={
+        "response": "json", "dayDate": date_str, "type": "day"
+    })
 
-    # 2. 若失敗，Fallback 舊版 API（正確參數必須為 dayDate）
+    # Layer 2: 舊版失敗才 fallback 到新版 RWD API（並驗證日期）
     if not data or not data.get("data"):
-        url_old = "https://www.twse.com.tw/exchangeReport/BFI82U"
-        data = _get_json(url_old, params={"response": "json", "dayDate": date_str, "type": "day"})
+        url_new = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+        data = _get_json(url_new, params={
+            "response": "json", "date": date_str, "type": "day"
+        })
+        if data:
+            # 驗證新版 API 回傳的 title 日期是否真的是我們要查的那天
+            # title 範例：「114年04月29日 三大法人買賣金額統計表」
+            title = str(data.get("title", "")).strip()
+            if title:
+                year_roc = int(date_str[:4]) - 1911
+                mm       = int(date_str[4:6])
+                dd       = int(date_str[6:8])
+                # 民國年「日期」格式可能：114年04月29日 / 114年4月29日
+                expected_patterns = [
+                    f"{year_roc}年{mm:02d}月{dd:02d}日",
+                    f"{year_roc}年{mm}月{dd}日",
+                ]
+                if not any(pat in title for pat in expected_patterns):
+                    print(f"  [inst] {date_str}: ⚠ 新版 API title='{title[:40]}' "
+                          f"與請求日期不符，視為無資料")
+                    data = None
 
     if not data or not data.get("data"):
         return None
@@ -209,10 +238,11 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
 
 
 def fetch_institutional_history(days: int = 6) -> list:
-    """抓取近 N 天的三大法人買賣超"""
+    """抓取近 N 天的三大法人買賣超（加 dedup 保護）"""
     results = []
     today   = datetime.now(TZ)
     start_d = _start_delta()   # 盤前空跑保護：盤中從昨天開始抓
+    seen_signatures = set()    # 防呆：同一組數字不能重複出現
 
     for delta in range(start_d, start_d + days * 2 + 5):
         if len(results) >= days:
@@ -226,6 +256,13 @@ def fetch_institutional_history(days: int = 6) -> list:
         if data and any(
             data[k]["net"] != 0 for k in ("foreign", "trust", "dealer")
         ):
+            # ⚠ 防呆：用「外資+投信+自營」淨額組合作為簽章
+            # 若此簽章已出現過 → API 回傳重複資料，跳過本筆
+            sig = (data["foreign"]["net"], data["trust"]["net"], data["dealer"]["net"])
+            if sig in seen_signatures:
+                print(f"    ⚠ {date_str} 數據與先前重複（API 可能返回最新日資料），略過")
+                continue
+            seen_signatures.add(sig)
             results.append(data)
             print(f"    ✓ 外資={data['foreign']['net']:,} 投信={data['trust']['net']:,} 自營={data['dealer']['net']:,}")
         time.sleep(0.8 + random.uniform(0, 0.3))
