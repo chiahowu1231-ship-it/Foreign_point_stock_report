@@ -171,6 +171,17 @@ jobs:
         run: |
           python src/mailer.py
 
+      # ── 🆕 推送 Telegram（若 Secret 未設定會自動跳過）──
+      - name: Send to Telegram
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PAGES_URL:          ${{ env.PAGES_URL }}
+        run: |
+          python src/telegram_sender.py
+
   # ════════════════════════════════════════════════
   #  Job 2: 發布 GitHub Pages（接在 Job 1 之後）
   # ════════════════════════════════════════════════
