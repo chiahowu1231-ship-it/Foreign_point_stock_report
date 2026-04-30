@@ -382,7 +382,12 @@ function renderAI(aiText) {
     return;
   }
 
-  const lines = aiText.split('\n');
+  // 預先清掉常見 markdown 噪音（避免標題前綴 ** 干擾 regex）
+  const cleanText = aiText
+    .replace(/^\s*#+\s*/gm, '')        // 移除 ### 標題標記
+    .replace(/^\s*\*\*([A-F])/gm, '$1');  // 移除 **A) 開頭的粗體標記
+
+  const lines = cleanText.split('\n');
   const sections = [];
   let cur = null;
 
@@ -390,16 +395,19 @@ function renderAI(aiText) {
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
     .replace(/\*([^*]+?)\*/g,  '<em>$1</em>');
 
+  // 容錯版 section header regex：A) / A） / A. / A: / A：/ A、
+  const SEC_RE = /^\*{0,2}\s*([A-F])\s*[)）.：:、]\s*(.+?)\*{0,2}\s*$/;
+
   for (const line of lines) {
     const s = line.trim();
-    if (!s || s === '---') continue;
+    if (!s || s === '---' || s === '___') continue;
 
-    const hm = s.match(/^([A-F])\s*[)）:：]\s*(.*)/);
+    const hm = s.match(SEC_RE);
     if (hm) {
       const letter = hm[1];
       if (letter === 'E') { cur = null; continue; }   // 移除一句話摘要
       if (cur) sections.push(cur);
-      const ai_title = hm[2].replace(/[：:]+$/, '').trim();
+      const ai_title = hm[2].replace(/[：:*]+$/, '').trim();
       const cfg = SEC_CFG[letter] || { label:ai_title, cls:'ai-A', numColor:'var(--accent-blue)' };
       cur = { letter, title:ai_title || cfg.label, cfg, body:[] };
       continue;
@@ -413,6 +421,24 @@ function renderAI(aiText) {
     cur.body.push({ type:'text', text:piLine(s) });
   }
   if (cur) sections.push(cur);
+
+  // ⚠ Fallback：若 parse 後完全沒有 section（AI 輸出格式變了），
+  // 直接把原文以 <pre> 顯示，避免空白頁
+  if (sections.length === 0) {
+    console.warn('[renderAI] 無法解析任何 section，fallback 為原文顯示');
+    $('ai-sections').innerHTML =
+      `<div class="ai-section open">
+        <div class="ai-sec-hdr" style="background:#1A4B7A">
+          <span class="letter">📄</span>
+          <span>AI 分析原文</span>
+          <span class="chevron">▾</span>
+        </div>
+        <div class="ai-sec-body" style="white-space:pre-wrap;font-family:var(--font-body);font-size:13px;line-height:1.85">${
+          aiText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        }</div>
+      </div>`;
+    return;
+  }
 
   $('ai-sections').innerHTML = sections.map((sec, si) => {
     const bodyHtml = sec.body.map(item => {
