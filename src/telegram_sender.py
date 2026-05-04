@@ -262,13 +262,39 @@ def pick_latest(pattern: str):
 
 
 # ─── 主入口 ─────────────────────────────────────────────
-def main():
-    token   = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.environ.get("TELEGRAM_CHAT_ID")   or "").strip()
+def _parse_chat_ids(raw: str) -> list:
+    """
+    支援多個 chat_id，分隔符：逗號 / 分號 / 空白 / 換行
+    範例：
+      "123456,-1009876"   → ["123456", "-1009876"]
+      "123456 -1009876"   → ["123456", "-1009876"]
+      "123456;-1009876"   → ["123456", "-1009876"]
+    """
+    if not raw:
+        return []
+    # 用 regex 拆分多種分隔符
+    parts = re.split(r"[,;\s]+", raw.strip())
+    # 過濾空字串並去重（保留順序）
+    seen = set()
+    result = []
+    for p in parts:
+        p = p.strip()
+        if p and p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
 
-    if not token or not chat_id:
+
+def main():
+    token       = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    raw_chat_id = (os.environ.get("TELEGRAM_CHAT_ID")   or "").strip()
+    chat_ids    = _parse_chat_ids(raw_chat_id)
+
+    if not token or not chat_ids:
         print("[telegram] 跳過：TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID 未設定")
         return
+
+    print(f"[telegram] 將推送至 {len(chat_ids)} 個對象：{chat_ids}")
 
     if not os.path.exists(SUMMARY_PATH):
         print(f"[telegram] ⚠ {SUMMARY_PATH} 不存在")
@@ -277,23 +303,38 @@ def main():
     with open(SUMMARY_PATH, "r", encoding="utf-8") as f:
         summary = json.load(f)
 
-    # 1. 發送摘要文字
+    # 1. 組合摘要文字
     msg = build_telegram_message(summary)
     print(f"[telegram] 訊息長度 {len(msg)} 字元")
-    ok_msg = send_telegram_message(token, chat_id, msg)
 
-    # 2. 發送 PDF 分析報告
+    # 2. 找 PDF 分析報告
     pdf_path = pick_latest(os.path.join("output", "TAIWAN外資分點狙擊分析報告_*.pdf"))
-    if pdf_path:
-        ymd = datetime.now(TZ).strftime("%Y-%m-%d")
-        send_telegram_document(
-            token, chat_id, pdf_path,
-            caption=f"📎 <b>{ymd} 完整分析報告</b>"
-        )
-    else:
-        print("[telegram] ⚠ 找不到分析 PDF，跳過附件")
+    ymd      = datetime.now(TZ).strftime("%Y-%m-%d")
 
-    if not ok_msg:
+    # 3. 逐一推送（單一對象失敗不影響其他對象）
+    success_count = 0
+    fail_count    = 0
+    for cid in chat_ids:
+        print(f"[telegram] ──→ 推送至 {cid}")
+        ok_msg = send_telegram_message(token, cid, msg)
+
+        if pdf_path:
+            send_telegram_document(
+                token, cid, pdf_path,
+                caption=f"📎 <b>{ymd} 完整分析報告</b>"
+            )
+        else:
+            print(f"[telegram]   ⚠ 找不到分析 PDF，跳過附件")
+
+        if ok_msg:
+            success_count += 1
+        else:
+            fail_count += 1
+
+    print(f"[telegram] 完成：成功 {success_count} 個 / 失敗 {fail_count} 個")
+
+    # 全部失敗才回傳錯誤碼
+    if success_count == 0 and fail_count > 0:
         sys.exit(1)
 
 
