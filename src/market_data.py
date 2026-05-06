@@ -147,29 +147,48 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
         "response": "json", "dayDate": date_str, "type": "day"
     })
 
-    # Layer 2: 舊版失敗才 fallback 到新版 RWD API（並驗證日期）
+    # Layer 2: 舊版失敗才 fallback 到新版 RWD API（並嚴格驗證日期）
     if not data or not data.get("data"):
         url_new = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
         data = _get_json(url_new, params={
             "response": "json", "date": date_str, "type": "day"
         })
-        if data:
-            # 驗證新版 API 回傳的 title 日期是否真的是我們要查的那天
-            # title 範例：「114年04月29日 三大法人買賣金額統計表」
-            title = str(data.get("title", "")).strip()
-            if title:
-                year_roc = int(date_str[:4]) - 1911
-                mm       = int(date_str[4:6])
-                dd       = int(date_str[6:8])
-                # 民國年「日期」格式可能：114年04月29日 / 114年4月29日
-                expected_patterns = [
-                    f"{year_roc}年{mm:02d}月{dd:02d}日",
-                    f"{year_roc}年{mm}月{dd}日",
-                ]
-                if not any(pat in title for pat in expected_patterns):
-                    print(f"  [inst] {date_str}: ⚠ 新版 API title='{title[:40]}' "
-                          f"與請求日期不符，視為無資料")
-                    data = None
+        if data and data.get("data"):
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # ⚠ 嚴格 title 驗證（修正歷史只抓到 1 天的根因）：
+            # TWSE 新版 RWD API 對 date 參數寬容過頭，永遠回傳「最新交易日」，
+            # 必須用 title 中的日期驗證資料是否真的是請求的那一天。
+            #
+            # title 可能格式（用 regex 一網打盡）：
+            #   "115/05/05 三大法人買賣金額統計表"
+            #   "中華民國 115 年 05 月 05 日 三大法人..."
+            #   "115年05月05日 三大法人..."
+            #   "114年5月5日 ..."
+            # 規則：title 中第一組「年/月/日」三個數字 = 請求日期才視為有效。
+            #       無法從 title 解析日期 → 保守拒絕（不再像舊版誤接受）
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            title    = str(data.get("title", "")).strip()
+            year_roc = int(date_str[:4]) - 1911
+            mm       = int(date_str[4:6])
+            dd       = int(date_str[6:8])
+
+            # 從 title 提取「年-月-日」三個數字（支援所有分隔符）
+            m = re.search(r"(\d{2,3})\s*[年/\-]\s*(\d{1,2})\s*[月/\-]\s*(\d{1,2})", title)
+            valid = False
+            if m:
+                t_y, t_m, t_d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if t_y == year_roc and t_m == mm and t_d == dd:
+                    valid = True
+                else:
+                    print(f"  [inst] {date_str}: ⚠ 新版 API title 解析出 "
+                          f"{t_y}/{t_m}/{t_d}，與請求 {year_roc}/{mm}/{dd} 不符，視為無資料")
+            else:
+                # 無法從 title 解析日期：保守拒絕（避免誤收最新日資料）
+                print(f"  [inst] {date_str}: ⚠ 無法從 title='{title[:40]}' 解析日期，"
+                      f"視為無資料（保守處理）")
+
+            if not valid:
+                data = None
 
     if not data or not data.get("data"):
         return None
@@ -260,11 +279,15 @@ def fetch_institutional_history(days: int = 6) -> list:
             # 若此簽章已出現過 → API 回傳重複資料，跳過本筆
             sig = (data["foreign"]["net"], data["trust"]["net"], data["dealer"]["net"])
             if sig in seen_signatures:
-                print(f"    ⚠ {date_str} 數據與先前重複（API 可能返回最新日資料），略過")
+                print(f"    ⚠ {date_str} 與先前數據完全相同（外資={sig[0]:,}/投信={sig[1]:,}/自營={sig[2]:,}），"
+                      f"判定為 API 返回重複資料，略過。"
+                      f"\n      若連續多天觸發此警告，請檢查 fetch_institutional_trading 的 title 驗證邏輯。")
                 continue
             seen_signatures.add(sig)
             results.append(data)
-            print(f"    ✓ 外資={data['foreign']['net']:,} 投信={data['trust']['net']:,} 自營={data['dealer']['net']:,}")
+            print(f"    ✓ 外資={data['foreign']['net']:,} "
+                  f"投信={data['trust']['net']:,} "
+                  f"自營={data['dealer']['net']:,}")
         time.sleep(0.8 + random.uniform(0, 0.3))
 
     return results
