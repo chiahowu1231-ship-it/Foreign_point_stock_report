@@ -296,7 +296,7 @@ def _render_institutional(inst: list) -> str:
     date_end   = _fmt_date(inst[0]["date"])
 
     def _streak_badge(key):
-        """連續同方向天數"""
+        """從最新一天往回算「連續」同方向天數"""
         vals = [d[key]["net"] for d in inst[:6]]
         if not vals or vals[0] == 0:
             return _badge("多空互見", "#888")
