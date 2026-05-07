@@ -7,7 +7,7 @@ on:
 
 # ── 權限：Pages 發布需要 ────────────────────────────
 permissions:
-  contents: read
+  contents: write    # 需要 push institutional_cache.json
   pages:    write
   id-token: write
 
@@ -181,6 +181,25 @@ jobs:
           PAGES_URL:          ${{ env.PAGES_URL }}
         run: |
           python src/telegram_sender.py
+
+      # ── 🆕 Commit institutional_cache.json 累積歷史資料 ──
+      # TWSE BFI82U API 不再支援歷史日期查詢，靠每日累積 cache 解決
+      - name: Commit institutional cache
+        if: always()
+        continue-on-error: true
+        run: |
+          git config --local user.name  "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/institutional_cache.json || true
+          if git diff --staged --quiet; then
+            echo "[OK] institutional cache 無變化，略過 commit"
+          else
+            REPORT_DATE="$(TZ=Asia/Taipei date +'%Y-%m-%d')"
+            git commit -m "📊 三大法人 cache：${REPORT_DATE} 自動累積 [skip ci]"
+            git pull --rebase
+            git push
+            echo "[OK] institutional_cache.json 已 commit"
+          fi
 
   # ════════════════════════════════════════════════
   #  Job 2: 發布 GitHub Pages（接在 Job 1 之後）
