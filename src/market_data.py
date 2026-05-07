@@ -115,80 +115,71 @@ def _start_delta() -> int:
     return 1 if (is_weekday and before_close) else 0
 
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  1. 三大法人買賣超
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _verify_title_date(data: dict, date_str: str, layer: str) -> bool:
+    """驗證 TWSE API title 日期是否與請求日期一致（新舊版 API date 參數均已失效）"""
+    title = str(data.get("title", "")).strip()
+    if not title:
+        print(f"  [inst] {date_str}: ⚠ {layer} 無 title，拒絕")
+        return False
+    year_roc = int(date_str[:4]) - 1911
+    mm, dd = int(date_str[4:6]), int(date_str[6:8])
+    m = re.search(r"(\d{2,3})\s*[年/\-]\s*(\d{1,2})\s*[月/\-]\s*(\d{1,2})", title)
+    if m:
+        t_y, t_m, t_d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if t_y == year_roc and t_m == mm and t_d == dd:
+            return True
+        print(f"  [inst] {date_str}: ⚠ {layer} title={t_y}/{t_m}/{t_d} ≠ {year_roc}/{mm}/{dd}")
+        return False
+    m2 = re.search(r"(20\d{2})\s*[/\-]\s*(\d{1,2})\s*[/\-]\s*(\d{1,2})", title)
+    if m2:
+        t_y, t_m, t_d = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+        if t_y == int(date_str[:4]) and t_m == mm and t_d == dd:
+            return True
+        print(f"  [inst] {date_str}: ⚠ {layer} title={t_y}/{t_m}/{t_d} ≠ 請求")
+        return False
+    print(f"  [inst] {date_str}: ⚠ {layer} 無法解析 title='{title[:50]}'")
+    return False
+
+
 def fetch_institutional_trading(date_str: str) -> Optional[dict]:
-    """
-    抓取三大法人買賣超（TWSE BFI82U）
-    date_str: 'YYYYMMDD'
+    """三大法人買賣超 — 3 層 fallback + 全層 title 驗證"""
+    data = None
 
-    TWSE BFI82U 實際欄位名稱（無「合計」行時的結構）：
-      row 0: 自營商(自行買賣)
-      row 1: 自營商(避險)
-      row 2: 投信
-      row 3: 外資及陸資(不含外資自營商)
-      row 4: 外資自營商
-      row 5: 合計（= 三大法人合計）
-    有時會有「自營商合計」「外資及陸資合計」等合計行。
-    """
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # ⚠️ Bug fix（資料重複問題）：
-    #   新版 RWD API 對 date 參數寬容過頭，無論傳哪一天都回傳「最新交易日」，
-    #   導致 history 迴圈每天拿到同一筆資料。
-    # 修正策略：
-    #   Layer 1: 舊版 API (dayDate) 嚴格依日期回傳 → 優先使用
-    #   Layer 2: 新版 API (date) 作為備援，並驗證 title 日期
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Layer 1: 舊版 API（dayDate 參數，嚴格依日期回傳）
-    url_old = "https://www.twse.com.tw/exchangeReport/BFI82U"
-    data = _get_json(url_old, params={
-        "response": "json", "dayDate": date_str, "type": "day"
-    })
+    # Layer 1: GET exchangeReport
+    d1 = _get_json("https://www.twse.com.tw/exchangeReport/BFI82U",
+                   params={"response": "json", "dayDate": date_str, "type": "day"},
+                   retries=2, timeout=12)
+    if d1 and d1.get("data") and _verify_title_date(d1, date_str, "L1-exchangeReport"):
+        data = d1
 
-    # Layer 2: 舊版失敗才 fallback 到新版 RWD API（並嚴格驗證日期）
-    if not data or not data.get("data"):
-        url_new = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
-        data = _get_json(url_new, params={
-            "response": "json", "date": date_str, "type": "day"
-        })
-        if data and data.get("data"):
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # ⚠ 嚴格 title 驗證（修正歷史只抓到 1 天的根因）：
-            # TWSE 新版 RWD API 對 date 參數寬容過頭，永遠回傳「最新交易日」，
-            # 必須用 title 中的日期驗證資料是否真的是請求的那一天。
-            #
-            # title 可能格式（用 regex 一網打盡）：
-            #   "115/05/05 三大法人買賣金額統計表"
-            #   "中華民國 115 年 05 月 05 日 三大法人..."
-            #   "115年05月05日 三大法人..."
-            #   "114年5月5日 ..."
-            # 規則：title 中第一組「年/月/日」三個數字 = 請求日期才視為有效。
-            #       無法從 title 解析日期 → 保守拒絕（不再像舊版誤接受）
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            title    = str(data.get("title", "")).strip()
-            year_roc = int(date_str[:4]) - 1911
-            mm       = int(date_str[4:6])
-            dd       = int(date_str[6:8])
+    # Layer 2: GET rwd
+    if not data:
+        d2 = _get_json("https://www.twse.com.tw/rwd/zh/fund/BFI82U",
+                       params={"response": "json", "date": date_str, "type": "day"},
+                       retries=2, timeout=12)
+        if d2 and d2.get("data") and _verify_title_date(d2, date_str, "L2-rwd-GET"):
+            data = d2
 
-            # 從 title 提取「年-月-日」三個數字（支援所有分隔符）
-            m = re.search(r"(\d{2,3})\s*[年/\-]\s*(\d{1,2})\s*[月/\-]\s*(\d{1,2})", title)
-            valid = False
-            if m:
-                t_y, t_m, t_d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                if t_y == year_roc and t_m == mm and t_d == dd:
-                    valid = True
-                else:
-                    print(f"  [inst] {date_str}: ⚠ 新版 API title 解析出 "
-                          f"{t_y}/{t_m}/{t_d}，與請求 {year_roc}/{mm}/{dd} 不符，視為無資料")
-            else:
-                # 無法從 title 解析日期：保守拒絕（避免誤收最新日資料）
-                print(f"  [inst] {date_str}: ⚠ 無法從 title='{title[:40]}' 解析日期，"
-                      f"視為無資料（保守處理）")
-
-            if not valid:
-                data = None
+    # Layer 3: POST rwd
+    if not data:
+        try:
+            r = SESSION.post("https://www.twse.com.tw/rwd/zh/fund/BFI82U",
+                            data={"response": "json", "date": date_str, "type": "day"},
+                            timeout=12)
+            if r.status_code == 200:
+                try:
+                    d3 = r.json()
+                except Exception:
+                    d3 = None
+                if d3 and d3.get("data") and _verify_title_date(d3, date_str, "L3-rwd-POST"):
+                    data = d3
+        except Exception as e:
+            print(f"  [inst] {date_str}: L3 POST error: {e}")
 
     if not data or not data.get("data"):
         return None
@@ -196,102 +187,75 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
     result = {
         "date": date_str,
         "foreign": {"buy": 0, "sell": 0, "net": 0},
-        "trust": {"buy": 0, "sell": 0, "net": 0},
-        "dealer": {"buy": 0, "sell": 0, "net": 0},
+        "trust":   {"buy": 0, "sell": 0, "net": 0},
+        "dealer":  {"buy": 0, "sell": 0, "net": 0},
         "total_net": 0,
     }
-
-    # 累加器（外資和自營商各有 2 個子行需要加總）
-    foreign_buy, foreign_sell, foreign_net = 0, 0, 0
-    dealer_buy, dealer_sell, dealer_net = 0, 0, 0
-    has_foreign_total = False
-    has_dealer_total = False
+    foreign_buy = foreign_sell = foreign_net = 0
+    dealer_buy = dealer_sell = dealer_net = 0
+    has_foreign_total = has_dealer_total = False
 
     for row in data["data"]:
         if len(row) < 4:
             continue
         name = str(row[0]).strip()
         b, s, n = _safe_int(row[1]), _safe_int(row[2]), _safe_int(row[3])
-
-        # ── 外資 ──
-        # 如果有「外資及陸資合計」直接用它
         if "外資" in name and "合計" in name:
-            result["foreign"] = {"buy": b, "sell": s, "net": n}
-            has_foreign_total = True
-        # 否則累加「外資及陸資(不含外資自營商)」+「外資自營商」
+            result["foreign"] = {"buy": b, "sell": s, "net": n}; has_foreign_total = True
         elif "外資" in name:
-            foreign_buy += b
-            foreign_sell += s
-            foreign_net += n
-
-        # ── 投信 ──
+            foreign_buy += b; foreign_sell += s; foreign_net += n
         elif "投信" in name:
             result["trust"] = {"buy": b, "sell": s, "net": n}
-
-        # ── 自營商 ──
         elif "自營商" in name and "合計" in name:
-            result["dealer"] = {"buy": b, "sell": s, "net": n}
-            has_dealer_total = True
+            result["dealer"] = {"buy": b, "sell": s, "net": n}; has_dealer_total = True
         elif "自營商" in name:
-            dealer_buy += b
-            dealer_sell += s
-            dealer_net += n
-
-        # ── 三大法人合計（最後一行通常是「合計」）──
+            dealer_buy += b; dealer_sell += s; dealer_net += n
         elif ("三大法人" in name) or (name == "合計"):
             result["total_net"] = n
 
-    # 如果沒有找到合計行，用累加值
     if not has_foreign_total and (foreign_buy or foreign_sell or foreign_net):
         result["foreign"] = {"buy": foreign_buy, "sell": foreign_sell, "net": foreign_net}
     if not has_dealer_total and (dealer_buy or dealer_sell or dealer_net):
         result["dealer"] = {"buy": dealer_buy, "sell": dealer_sell, "net": dealer_net}
-
-    # 如果 total_net 仍為 0，手動加總
     if result["total_net"] == 0:
-        result["total_net"] = (
-            result["foreign"]["net"] + result["trust"]["net"] + result["dealer"]["net"]
-        )
-
+        result["total_net"] = result["foreign"]["net"] + result["trust"]["net"] + result["dealer"]["net"]
     return result
 
 
 def fetch_institutional_history(days: int = 6) -> list:
-    """抓取近 N 天的三大法人買賣超（加 dedup 保護）"""
-    results = []
+    """抓取近 N 天三大法人（3 層 fallback + 全層 title 驗證 + dedup）"""
+    results, rejected_dates = [], []
     today   = datetime.now(TZ)
-    start_d = _start_delta()   # 盤前空跑保護：盤中從昨天開始抓
-    seen_signatures = set()    # 防呆：同一組數字不能重複出現
+    start_d = _start_delta()
+    seen_signatures = set()
 
     for delta in range(start_d, start_d + days * 2 + 5):
         if len(results) >= days:
             break
         d = today - timedelta(days=delta)
-        if d.weekday() >= 5:  # 跳過六日
+        if d.weekday() >= 5:
             continue
         date_str = d.strftime("%Y%m%d")
         print(f"  [institutional] 抓取 {date_str}...")
         data = fetch_institutional_trading(date_str)
-        if data and any(
-            data[k]["net"] != 0 for k in ("foreign", "trust", "dealer")
-        ):
-            # ⚠ 防呆：用「外資+投信+自營」淨額組合作為簽章
-            # 若此簽章已出現過 → API 回傳重複資料，跳過本筆
+        if data and any(data[k]["net"] != 0 for k in ("foreign", "trust", "dealer")):
             sig = (data["foreign"]["net"], data["trust"]["net"], data["dealer"]["net"])
             if sig in seen_signatures:
-                print(f"    ⚠ {date_str} 與先前數據完全相同（外資={sig[0]:,}/投信={sig[1]:,}/自營={sig[2]:,}），"
-                      f"判定為 API 返回重複資料，略過。"
-                      f"\n      若連續多天觸發此警告，請檢查 fetch_institutional_trading 的 title 驗證邏輯。")
+                print(f"    ⚠ {date_str} 重複，略過")
+                rejected_dates.append(date_str)
                 continue
             seen_signatures.add(sig)
             results.append(data)
-            print(f"    ✓ 外資={data['foreign']['net']:,} "
-                  f"投信={data['trust']['net']:,} "
-                  f"自營={data['dealer']['net']:,}")
+            print(f"    ✓ 外資={data['foreign']['net']:,} 投信={data['trust']['net']:,} 自營={data['dealer']['net']:,}")
+        else:
+            rejected_dates.append(date_str)
         time.sleep(0.8 + random.uniform(0, 0.3))
 
+    if len(results) < days:
+        print(f"  [institutional] ⚠ 只取得 {len(results)}/{days} 天")
+    else:
+        print(f"  [institutional] ✓ 成功取得 {len(results)} 天")
     return results
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  2. 大盤指數 + 成交量（近 N 天）
@@ -986,22 +950,36 @@ def format_market_context_for_prompt(market_data: dict) -> str:
         date_start = inst[min(n-1, 5)]["date"]
         date_end   = inst[0]["date"]
 
-        def _trend(v):
-            return "連續淨買" if v > 0 else "連續淨賣" if v < 0 else "多空互見"
+        def _streak_consecutive(key):
+            """從最新一天往回算「連續」同方向天數"""
+            vals = [d[key]["net"] for d in inst[:6]]
+            if not vals or vals[0] == 0:
+                return ("持平", 0)
+            is_buy = vals[0] > 0
+            streak = 0
+            for v in vals:
+                if (is_buy and v > 0) or (not is_buy and v < 0):
+                    streak += 1
+                else:
+                    break
+            return ("連續買超" if is_buy else "連續賣超", streak)
 
-        def _streak(key):
+        def _streak_total(key):
             vals = [d[key]["net"] for d in inst[:6]]
             return sum(1 for v in vals if v > 0), sum(1 for v in vals if v < 0)
 
-        fg_b, fg_s = _streak("foreign")
-        tr_b, tr_s = _streak("trust")
-        dl_b, dl_s = _streak("dealer")
+        fg_dir, fg_streak = _streak_consecutive("foreign")
+        tr_dir, tr_streak = _streak_consecutive("trust")
+        dl_dir, dl_streak = _streak_consecutive("dealer")
+        fg_b, fg_s = _streak_total("foreign")
+        tr_b, tr_s = _streak_total("trust")
+        dl_b, dl_s = _streak_total("dealer")
 
         lines.append("")
         lines.append(f"【三大法人{n}日累計買賣超（{date_start}～{date_end}，元）】")
-        lines.append(f"  外資累計：{_fmt(cum_fg)}　買超{fg_b}日/賣超{fg_s}日　趨勢：{_trend(cum_fg)}")
-        lines.append(f"  投信累計：{_fmt(cum_tr)}　買超{tr_b}日/賣超{tr_s}日　趨勢：{_trend(cum_tr)}")
-        lines.append(f"  自營累計：{_fmt(cum_dl)}　買超{dl_b}日/賣超{dl_s}日　趨勢：{_trend(cum_dl)}")
+        lines.append(f"  外資累計：{_fmt(cum_fg)}　{fg_dir}{fg_streak}日（{n}日中買超{fg_b}日/賣超{fg_s}日）")
+        lines.append(f"  投信累計：{_fmt(cum_tr)}　{tr_dir}{tr_streak}日（{n}日中買超{tr_b}日/賣超{tr_s}日）")
+        lines.append(f"  自營累計：{_fmt(cum_dl)}　{dl_dir}{dl_streak}日（{n}日中買超{dl_b}日/賣超{dl_s}日）")
         lines.append(f"  三大合計：{_fmt(cum_tot)}")
         lines.append("")
 

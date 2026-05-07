@@ -296,15 +296,21 @@ def _render_institutional(inst: list) -> str:
     date_end   = _fmt_date(inst[0]["date"])
 
     def _streak_badge(key):
-        vals  = [d[key]["net"] for d in inst[:6]]
-        b_cnt = sum(1 for v in vals if v > 0)
-        s_cnt = sum(1 for v in vals if v < 0)
-        if b_cnt > s_cnt:
-            return _badge(f"買超{b_cnt}日", "#C0392B")
-        elif s_cnt > b_cnt:
-            return _badge(f"賣超{s_cnt}日", "#27AE60")
-        else:
+        """連續同方向天數"""
+        vals = [d[key]["net"] for d in inst[:6]]
+        if not vals or vals[0] == 0:
             return _badge("多空互見", "#888")
+        is_buy = vals[0] > 0
+        streak = 0
+        for v in vals:
+            if (is_buy and v > 0) or (not is_buy and v < 0):
+                streak += 1
+            else:
+                break
+        if is_buy:
+            return _badge(f"連買{streak}日", "#C0392B")
+        else:
+            return _badge(f"連賣{streak}日", "#27AE60")
 
     hdr = _sec_hdr("🏦", "三大法人買賣超（元）", "blue", f"近 {n} 日　{date_start} ～ {date_end}")
     tbl = _table_open([("100px",""), ("110px",""), ("110px",""), ("110px",""), ("110px","")])
