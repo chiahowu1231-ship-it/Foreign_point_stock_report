@@ -285,11 +285,14 @@ function renderInstitutional(inst) {
   // 趨勢說明
   const streak = key => {
     const vals = data.map(d => d[key]?.net || 0);
-    const b = vals.filter(v => v > 0).length;
-    const s = vals.filter(v => v < 0).length;
-    if (b > s) return `<span class="badge badge-buy">買超${b}日</span>`;
-    if (s > b) return `<span class="badge badge-sell">賣超${s}日</span>`;
-    return `<span class="badge badge-neu">多空互見</span>`;
+    if (!vals.length || vals[0] === 0) return `<span class="badge badge-neu">多空互見</span>`;
+    const isBuy = vals[0] > 0;
+    let count = 0;
+    for (const v of vals) {
+      if ((isBuy && v > 0) || (!isBuy && v < 0)) { count++; } else { break; }
+    }
+    if (isBuy) return `<span class="badge badge-buy">連買${count}日</span>`;
+    return `<span class="badge badge-sell">連賣${count}日</span>`;
   };
   $('inst-cum-foot').innerHTML =
     `外資 ${streak('foreign')}　投信 ${streak('trust')}　自營 ${streak('dealer')}`;
