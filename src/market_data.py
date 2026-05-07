@@ -120,6 +120,121 @@ def _start_delta() -> int:
 #  1. 三大法人買賣超
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# ── 歷史資料 Cache（解決 TWSE API 不再支援歷史查詢的問題） ──
+INST_CACHE_PATH = os.path.join("data", "institutional_cache.json")
+
+
+def _load_inst_cache() -> dict:
+    """載入歷史 cache: {date_str: data_dict}"""
+    if not os.path.exists(INST_CACHE_PATH):
+        return {}
+    try:
+        with open(INST_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"  [inst-cache] 讀取失敗: {e}")
+        return {}
+
+
+def _save_inst_cache(cache: dict, keep_days: int = 30) -> None:
+    """儲存 cache，只保留最近 keep_days 個交易日"""
+    try:
+        os.makedirs(os.path.dirname(INST_CACHE_PATH) or ".", exist_ok=True)
+        sorted_dates = sorted(cache.keys(), reverse=True)
+        trimmed = {d: cache[d] for d in sorted_dates[:keep_days]}
+        with open(INST_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(trimmed, f, ensure_ascii=False, indent=2)
+        print(f"  [inst-cache] ✓ 已儲存 {len(trimmed)} 天到 {INST_CACHE_PATH}")
+    except Exception as e:
+        print(f"  [inst-cache] 儲存失敗: {e}")
+
+
+def _fetch_inst_from_openapi() -> dict:
+    """
+    嘗試 TWSE OpenData 一次抓多天資料（補充 cache 用）
+    回傳 {date_str: data_dict}；若 API 只返回單日也沒關係
+    """
+    url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
+    try:
+        r = SESSION.get(url, timeout=15)
+        if r.status_code != 200:
+            return {}
+        try:
+            items = r.json()
+        except Exception:
+            return {}
+        if not isinstance(items, list) or not items:
+            return {}
+
+        # 按日期 group（每天可能有 5~6 筆，每筆是一個身分別）
+        by_date: dict = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            d_raw = str(item.get("Date") or item.get("date") or item.get("日期") or "").replace("/", "")
+            # 民國年 1140505 → 西元 20250505
+            if len(d_raw) == 7 and d_raw.isdigit():
+                d_raw = str(int(d_raw[:3]) + 1911) + d_raw[3:]
+            elif len(d_raw) != 8 or not d_raw.isdigit():
+                continue
+            by_date.setdefault(d_raw, []).append(item)
+
+        if not by_date:
+            return {}
+
+        # 解析每天
+        results = {}
+        for date_str, day_items in by_date.items():
+            result = {
+                "date": date_str,
+                "foreign": {"buy": 0, "sell": 0, "net": 0},
+                "trust":   {"buy": 0, "sell": 0, "net": 0},
+                "dealer":  {"buy": 0, "sell": 0, "net": 0},
+                "total_net": 0,
+            }
+            for item in day_items:
+                # 多種可能 key 名（OpenData 改版頻繁）
+                name = str(
+                    item.get("name", "") or item.get("UnitName", "")
+                    or item.get("單位名稱", "") or item.get("身分別", "")
+                ).strip()
+                buy  = _safe_int(item.get("buy_amount") or item.get("BuyAmount") or item.get("買進金額") or 0)
+                sell = _safe_int(item.get("sell_amount") or item.get("SellAmount") or item.get("賣出金額") or 0)
+                net  = _safe_int(item.get("net_amount") or item.get("NetAmount") or item.get("買賣差額") or 0)
+
+                if "外資" in name and "合計" in name:
+                    result["foreign"] = {"buy": buy, "sell": sell, "net": net}
+                elif "外資" in name:
+                    result["foreign"]["buy"]  += buy
+                    result["foreign"]["sell"] += sell
+                    result["foreign"]["net"]  += net
+                elif "投信" in name:
+                    result["trust"] = {"buy": buy, "sell": sell, "net": net}
+                elif "自營商" in name and "合計" in name:
+                    result["dealer"] = {"buy": buy, "sell": sell, "net": net}
+                elif "自營商" in name:
+                    result["dealer"]["buy"]  += buy
+                    result["dealer"]["sell"] += sell
+                    result["dealer"]["net"]  += net
+                elif name == "合計" or "三大法人" in name:
+                    result["total_net"] = net
+
+            if result["total_net"] == 0:
+                result["total_net"] = (
+                    result["foreign"]["net"] + result["trust"]["net"] + result["dealer"]["net"]
+                )
+
+            if any(result[k]["net"] != 0 for k in ("foreign", "trust", "dealer")):
+                results[date_str] = result
+
+        if results:
+            print(f"  [inst-OpenAPI] 取得 {len(results)} 天資料")
+        return results
+    except Exception as e:
+        print(f"  [inst-OpenAPI] 例外: {e}")
+        return {}
+
+
 def _verify_title_date(data: dict, date_str: str, layer: str) -> bool:
     """驗證 TWSE API title 日期是否與請求日期一致（新舊版 API date 參數均已失效）"""
     title = str(data.get("title", "")).strip()
@@ -223,38 +338,69 @@ def fetch_institutional_trading(date_str: str) -> Optional[dict]:
 
 
 def fetch_institutional_history(days: int = 6) -> list:
-    """抓取近 N 天三大法人（3 層 fallback + 全層 title 驗證 + dedup）"""
-    results, rejected_dates = [], []
+    """
+    抓取近 N 天三大法人買賣超。
+    
+    多層策略（解決 TWSE BFI82U API 不再支援歷史日期查詢的根本問題）：
+      1. 載入 data/institutional_cache.json（過去累積的歷史資料）
+      2. 嘗試 TWSE OpenData API（可能含多天，補強 cache）
+      3. 對候選日期逐一嘗試 fetch_institutional_trading（特別是今天）
+      4. 將新資料寫回 cache（保留近 30 天）
+      5. 從合併後的資料挑選最近 N 天回傳
+    
+    第一次跑只有今天 1 天，但每天累積 1 天，第 6 天起穩定 6 天。
+    """
     today   = datetime.now(TZ)
     start_d = _start_delta()
-    seen_signatures = set()
 
+    # ── 1. 載入 cache ──
+    cache = _load_inst_cache()
+    print(f"  [institutional] cache 已載入 {len(cache)} 天歷史資料")
+
+    # ── 2. 嘗試 OpenData 一次抓多天 ──
+    open_data = _fetch_inst_from_openapi()
+    for date_str, data in open_data.items():
+        # 用簽章 dedup（避免不同來源混入相同假資料）
+        cache[date_str] = data
+
+    # ── 3. 計算需要補抓的候選日期 ──
+    candidates = []
     for delta in range(start_d, start_d + days * 2 + 5):
-        if len(results) >= days:
-            break
         d = today - timedelta(days=delta)
         if d.weekday() >= 5:
             continue
         date_str = d.strftime("%Y%m%d")
-        print(f"  [institutional] 抓取 {date_str}...")
+        candidates.append(date_str)
+        if len(candidates) >= days * 2:
+            break
+
+    # ── 4. 對缺失日期逐一補抓（特別是今天）──
+    for date_str in candidates:
+        if date_str in cache:
+            continue
+        print(f"  [institutional] 補抓 {date_str}...")
         data = fetch_institutional_trading(date_str)
         if data and any(data[k]["net"] != 0 for k in ("foreign", "trust", "dealer")):
-            sig = (data["foreign"]["net"], data["trust"]["net"], data["dealer"]["net"])
-            if sig in seen_signatures:
-                print(f"    ⚠ {date_str} 重複，略過")
-                rejected_dates.append(date_str)
-                continue
-            seen_signatures.add(sig)
-            results.append(data)
-            print(f"    ✓ 外資={data['foreign']['net']:,} 投信={data['trust']['net']:,} 自營={data['dealer']['net']:,}")
-        else:
-            rejected_dates.append(date_str)
-        time.sleep(0.8 + random.uniform(0, 0.3))
+            cache[date_str] = data
+            print(f"    ✓ 外資={data['foreign']['net']:,} "
+                  f"投信={data['trust']['net']:,} "
+                  f"自營={data['dealer']['net']:,}")
+        time.sleep(0.5 + random.uniform(0, 0.3))
+
+    # ── 5. 寫回 cache ──
+    if cache:
+        _save_inst_cache(cache, keep_days=30)
+
+    # ── 6. 從 cache 取近 N 天回傳（按日期由新到舊）──
+    sorted_dates = sorted(cache.keys(), reverse=True)
+    results = [cache[d] for d in sorted_dates[:days]]
 
     if len(results) < days:
-        print(f"  [institutional] ⚠ 只取得 {len(results)}/{days} 天")
+        print(f"  [institutional] ⚠ 只取得 {len(results)}/{days} 天 "
+              f"（cache 累積中，每天執行會自動補滿）")
     else:
-        print(f"  [institutional] ✓ 成功取得 {len(results)} 天")
+        print(f"  [institutional] ✓ 成功取得 {len(results)} 天 "
+              f"（cache 共 {len(cache)} 天）")
     return results
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
